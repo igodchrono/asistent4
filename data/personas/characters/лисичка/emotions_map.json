@@ -1,0 +1,47 @@
+{
+  "emotions": {
+    "love": "love_warm",
+    "happy": "happy_big",
+    "sad": "cry",
+    "angry": "angry",
+    "flirty": "flirty",
+    "undress": "undress",
+    "thinking": "thinking",
+    "searching": "searching",
+    "surprised": "surprised",
+    "playful": "playful",
+    "shy": "shy",
+    "sleepy": "sleepy",
+    "tired": "tired",
+    "neutral": "idle"
+  },
+  "actions": {
+    "search": "searching",
+    "deep_think": "thinking",
+    "pc_control": "pointing",
+    "auto_screen": "surprised",
+    "user_ask_screen": "searching",
+    "reminder": "surprised"
+  },
+  "keywords": [
+    {"keys": ["люблю тебя", "обожаю тебя", "поцелуй"], "anim": "love_warm", "emotion": "love"},
+    {"keys": ["раздень", "голая", "без одежды"], "anim": "undress", "emotion": "undress"},
+    {"keys": ["танцуй", "потанцуй", "станцуй"], "anim": "dance", "emotion": "happy"},
+    {"keys": ["хвостик", "хвост", "ушки", "уши"], "anim": "sly", "emotion": "playful"},
+    {"keys": ["руки", "ладони", "что в руках", "покажи руки"], "anim": "pointing", "emotion": "playful"},
+    {"keys": ["грудь", "тело ближе", "поближе", "крупнее"], "anim": "lingerie", "emotion": "flirty"},
+    {"keys": ["бельё", "лифчик"], "anim": "lingerie", "emotion": "flirty"},
+    {"keys": ["ванна", "купаешься", "моешься"], "anim": "bath", "emotion": "shy"},
+    {"keys": ["кровать", "ложись", "в постель"], "anim": "bed", "emotion": "love"},
+    {"keys": ["подмигни", "дразни"], "anim": "teasing", "emotion": "playful"},
+    {"keys": ["смущаешься", "стесняешься"], "anim": "shy_blush", "emotion": "shy"},
+    {"keys": ["ревнуешь"], "anim": "jealous", "emotion": "angry"},
+    {"keys": ["поспи", "спи", "устала"], "anim": "sleepy", "emotion": "sleepy"},
+    {"keys": ["поплачь", "грустно"], "anim": "cry", "emotion": "sad"},
+    {"keys": ["удивись", "шок"], "anim": "shocked", "emotion": "surprised"},
+    {"keys": ["испуг", "боюсь"], "anim": "scared", "emotion": "sad"},
+    {"keys": ["гордись"], "anim": "proud", "emotion": "happy"},
+    {"keys": ["хихи", "смейся"], "anim": "giggling", "emotion": "happy"}
+  ],
+  "compounds": {"enabled": true}
+}

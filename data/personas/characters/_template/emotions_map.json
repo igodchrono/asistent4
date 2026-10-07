@@ -1,0 +1,32 @@
+{
+  "emotions": {
+    "love": "love_warm",
+    "happy": "happy_big",
+    "sad": "sad",
+    "angry": "angry",
+    "flirty": "flirty",
+    "undress": "undress",
+    "thinking": "thinking",
+    "searching": "searching",
+    "surprised": "surprised",
+    "playful": "playful",
+    "shy": "shy",
+    "sleepy": "sleepy",
+    "tired": "tired",
+    "neutral": "neutral"
+  },
+  "actions": {
+    "search": "searching",
+    "deep_think": "thinking",
+    "pc_control": "thinking",
+    "auto_screen": "surprised",
+    "user_ask_screen": "searching",
+    "reminder": "surprised"
+  },
+  "keywords": [
+    {"keys": ["люблю тебя", "обожаю тебя"], "anim": "love_warm", "emotion": "love"},
+    {"keys": ["раздень", "голая"], "anim": "undress", "emotion": "undress"},
+    {"keys": ["танцуй"], "anim": "dance", "emotion": "happy"}
+  ],
+  "compounds": {"enabled": true}
+}

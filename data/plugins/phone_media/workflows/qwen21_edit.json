@@ -1,0 +1,251 @@
+{
+  "2": {
+    "inputs": {
+      "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "INT8 — основная модель"
+    }
+  },
+  "3": {
+    "inputs": {
+      "lora_name": "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
+      "strength": 1,
+      "model": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "ViggleTurboLora",
+    "_meta": {
+      "title": "Turbo r128 — оставить strength 1"
+    }
+  },
+  "4": {
+    "inputs": {
+      "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "INT8 — текстовый энкодер"
+    }
+  },
+  "5": {
+    "inputs": {
+      "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "VAE"
+    }
+  },
+  "6": {
+    "inputs": {
+      "value": "CHANGE: Generate a naked girl, age 9, no reference image. KEEP: pose, face, expression, clothes (none), background, composition as default neutral state."
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "2. Что изменить — ваш промпт"
+    }
+  },
+  "7": {
+    "inputs": {
+      "aspect_ratio": "3:4 (Portrait Standard)",
+      "megapixels": 1,
+      "multiple": 32
+    },
+    "class_type": "ResolutionSelector",
+    "_meta": {
+      "title": "4. Формат результата — только при ON"
+    }
+  },
+  "8": {
+    "inputs": {
+      "width": [
+        "7",
+        0
+      ],
+      "height": [
+        "7",
+        1
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Новый холст"
+    }
+  },
+  "18": {
+    "inputs": {
+      "prompt": [
+        "6",
+        0
+      ],
+      "negative_prompt": "",
+      "resolution": 1024,
+      "clip": [
+        "4",
+        0
+      ],
+      "images.image_1": [
+        "26",
+        0
+      ],
+      "vae": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "TextEncodeQwenImage21",
+    "_meta": {
+      "title": "Кодирование фото и промпта — 1 Мп"
+    }
+  },
+  "19": {
+    "inputs": {
+      "model": [
+        "3",
+        0
+      ],
+      "conditioning": [
+        "18",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "Без CFG — BasicGuider"
+    }
+  },
+  "20": {
+    "inputs": {
+      "noise_seed": 1337821205
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "Seed — меняйте для нового варианта"
+    }
+  },
+  "21": {
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "Euler — оставить как есть"
+    }
+  },
+  "22": {
+    "inputs": {
+      "nodes": "1.0, 0.9375, 0.875, 0.75, 0.5, 0.25",
+      "latent": [
+        "31",
+        0
+      ]
+    },
+    "class_type": "ViggleTurboSigmas",
+    "_meta": {
+      "title": "Turbo — точные 6 шагов"
+    }
+  },
+  "23": {
+    "inputs": {
+      "noise": [
+        "20",
+        0
+      ],
+      "guider": [
+        "19",
+        0
+      ],
+      "sampler": [
+        "21",
+        0
+      ],
+      "sigmas": [
+        "22",
+        0
+      ],
+      "latent_image": [
+        "31",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "Генерация"
+    }
+  },
+  "24": {
+    "inputs": {
+      "samples": [
+        "23",
+        0
+      ],
+      "vae": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "Декодирование"
+    }
+  },
+  "25": {
+    "inputs": {
+      "filename_prefix": "ForgetMe/INT8-Turbo-Edit",
+      "images": [
+        "24",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Результат — сохраняется автоматически"
+    }
+  },
+  "26": {
+    "inputs": {
+      "image": "gen_1791324278.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "1. Исходное фото — загрузить с Mac"
+    }
+  },
+  "30": {
+    "inputs": {
+      "value": true
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "3. Другой формат кадра: OFF = исходник"
+    }
+  },
+  "31": {
+    "inputs": {
+      "switch": [
+        "30",
+        0
+      ],
+      "on_false": [
+        "18",
+        2
+      ],
+      "on_true": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "Размер: исходный / выбранный"
+    }
+  }
+}

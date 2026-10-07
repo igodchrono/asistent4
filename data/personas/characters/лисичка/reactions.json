@@ -1,0 +1,12 @@
+{
+  "_comment": "Фраза → существующий файл в images/. Нет отдельного кадра — ближайший.",
+  "reactions": [
+    {"phrases": ["покажи хвостик", "хвостик", "хвост"], "sprite": "sly", "emotion": "playful", "confidence": 0.95},
+    {"phrases": ["покажи ушки", "ушки", "уши"], "sprite": "sly", "emotion": "playful", "confidence": 0.9},
+    {"phrases": ["покажи руки", "что в руках", "ладони"], "sprite": "pointing", "emotion": "playful", "confidence": 0.95},
+    {"phrases": ["покажи себя", "как ты выглядишь"], "sprite": "idle_happy", "emotion": "happy", "confidence": 0.8},
+    {"phrases": ["потанцуй", "танцуй"], "sprite": "dance", "emotion": "happy", "confidence": 0.97},
+    {"phrases": ["тело ближе", "поближе", "крупный план"], "sprite": "lingerie", "emotion": "flirty", "confidence": 0.9},
+    {"phrases": ["разденься", "голая"], "sprite": "undress", "emotion": "undress", "confidence": 0.97}
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "API_URL": "http://127.0.0.1:1234/v1",
+  "API_KEY": "lm-studio",
+  "MODEL_NAME": "local-model",
+  "TEMPERATURE": 0.4,
+  "MAX_TOKENS": 1000,
+  "ASSISTANT_MODE": "companion",
+  "HISTORY_TAIL": 40,
+  "PLUGINS_ENABLED": true,
+  "PLUGINS": {
+    "attachments": true,
+    "persona": true,
+    "notes": true,
+    "screen": true,
+    "phone_media": true,
+    "pc_control": true,
+    "rag": true,
+    "voice": true,
+    "browser_search": true,
+    "auto_messages": true,
+    "companion": true,
+    "reminders": true,
+    "memory": true,
+    "deep_think": true,
+    "files": true,
+    "character_log": true
+  },
+  "PLUGIN_SETTINGS": {
+    "pc_control": {
+      "enabled": true,
+      "sandbox": true,
+      "allow_process_close": false,
+      "confirm_danger": true
+    },
+    "browser_search": {
+      "enabled": true,
+      "search_engine": "duckduckgo",
+      "open_each_query": true,
+      "browser": "default"
+    },
+    "voice": {
+      "enabled": true,
+      "listen_enabled": false,
+      "wake_enabled": false,
+      "speak_enabled": false
+    },
+    "memory": {
+      "enabled": true,
+      "history_tail": 40,
+      "diary_days": 10,
+      "max_inject": 10
+    }
+  },
+  "ACTIVE_CHARACTER": "лисичка",
+  "SYSTEM_PROMPT": "Ты живой ассистент. Характер, стиль и границы — только из карточки персонажа. Не сжимай ответ ради краткости, если персонаж или пользователь просят иначе."
+}

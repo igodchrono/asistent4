@@ -1,0 +1,81 @@
+# Портативный Python — не заливать
+/python/
+python/
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.Python
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+
+# Логи
+logs/
+*.log
+start_error.log
+
+# SQLite служебные файлы
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Базы с данными пользователя — не в git
+*.db
+assistant_memory.db
+persistent_memory.db
+reminders.db
+advanced_rag.db
+apps.db
+
+# Локальные настройки (копируется из data/settings.example.json)
+data/settings.json
+settings.json
+
+# Скачанные вложения / кэш экрана
+data/attachments/
+data/uploads/
+data/cache/
+data/selftest_files/
+
+# QA политики — только локально, в git не входит
+data/selftest_policy/
+data/personas/characters/qa-open/
+data/personas/characters/qa-lock/
+data/personas/characters/тест-макс/
+data/personas/characters/тест-лок/
+.vs
+
+# Модели и чекпоинты — HuggingFace / релизы, не git
+data/models/**
+!data/models/README.md
+data/vosk-model-small-ru-0.22/
+*.safetensors
+*.pt
+*.pth
+**/checkpoints/
+
+# Секреты
+secret.key
+*.pem
+.env
+.env.*
+
+# Архивы
+*.zip
+*.7z
+*.rar
+
+# Системное
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.swp
+data/cache/screen_last.jpg
+data/cache/screen_last.txt
