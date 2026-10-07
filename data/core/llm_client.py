@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
 import json
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
@@ -30,11 +30,17 @@ def normalize_api_url(url: str) -> str:
 
 
 class LLMClient:
+    """Универсальный LLM-клиент: local (LM Studio) или external (proxyapi.ru и др.)."""
+
+    PROVIDER_LOCAL = "local"
+    PROVIDER_EXTERNAL = "external"
+
     def __init__(
         self,
         api_url: str,
         api_key: str,
         model: str,
+        provider: str = PROVIDER_LOCAL,
         temperature: float = 0.4,
         max_tokens: int = 1000,
         timeout: float = 300,
@@ -42,26 +48,81 @@ class LLMClient:
         self.api_url = normalize_api_url(api_url)
         self.api_key = api_key or "lm-studio"
         self.model = model or "local-model"
+        self.provider = provider or self.PROVIDER_LOCAL
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.timeout = timeout
 
     @classmethod
-    def from_config(cls, config) -> "LLMClient":
+    def from_config(cls, config, app=None) -> "LLMClient":
+        """Создаёт клиента на основе конфига и настроек плагина llm_provider."""
+        provider = cls.PROVIDER_LOCAL
+        api_url = str(getattr(config, "API_URL", "http://127.0.0.1:1234/v1"))
+        api_key = str(getattr(config, "API_KEY", "lm-studio"))
+        model = str(getattr(config, "MODEL_NAME", "local-model"))
+
+        # Если есть app с плагином llm_provider — читаем его настройки
+        if app is not None:
+            try:
+                prov = app.get_plugin_setting("llm_provider", "provider", "local")
+                if prov in (cls.PROVIDER_LOCAL, cls.PROVIDER_EXTERNAL):
+                    provider = prov
+                if provider == cls.PROVIDER_EXTERNAL:
+                    ext_url = app.get_plugin_setting(
+                        "llm_provider", "external_api_url",
+                        "https://api.proxyapi.ru",
+                    )
+                    ext_key = app.get_plugin_setting(
+                        "llm_provider", "external_api_key", "",
+                    )
+                    ext_model = app.get_plugin_setting(
+                        "llm_provider", "external_model", "gpt-4o",
+                    )
+                    if ext_url:
+                        api_url = str(ext_url)
+                    if ext_key:
+                        api_key = str(ext_key)
+                    if ext_model:
+                        model = str(ext_model)
+                else:
+                    local_url = app.get_plugin_setting(
+                        "llm_provider", "local_api_url",
+                        "http://127.0.0.1:1234/v1",
+                    )
+                    local_model = app.get_plugin_setting(
+                        "llm_provider", "local_model", "local-model",
+                    )
+                    if local_url:
+                        api_url = str(local_url)
+                    if local_model:
+                        model = str(local_model)
+            except Exception:
+                pass
+
         return cls(
-            api_url=str(getattr(config, "API_URL", "http://127.0.0.1:1234/v1")),
-            api_key=str(getattr(config, "API_KEY", "lm-studio")),
-            model=str(getattr(config, "MODEL_NAME", "local-model")),
+            api_url=api_url,
+            api_key=api_key,
+            model=model,
+            provider=provider,
             temperature=float(getattr(config, "TEMPERATURE", 0.4) or 0.4),
             max_tokens=int(getattr(config, "MAX_TOKENS", 1000) or 1000),
             timeout=float(getattr(config, "LLM_TIMEOUT", 300) or 300),
         )
 
     def _headers(self) -> Dict[str, str]:
+        if self.provider == self.PROVIDER_EXTERNAL:
+            return {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+
+    @property
+    def _provider_label(self) -> str:
+        return "External API" if self.provider == self.PROVIDER_EXTERNAL else "LM Studio"
 
     async def list_models(self) -> Tuple[List[str], Optional[str]]:
         """GET /models. Возвращает (имена, ошибка|None)."""
@@ -126,8 +187,7 @@ class LLMClient:
                         yield (
                             f"[Ошибка API {resp.status}] {url}\n"
                             f"model={payload['model']}\n{err[:500]}\n"
-                            f"Проверьте: LM Studio запущен, Server Start, "
-                            f"API URL = {self.api_url}, модель загружена."
+                            f"Проверьте соединение: {self._provider_label}, API URL = {self.api_url}, модель загружена."
                         )
                         return
                     async for raw in resp.content:
@@ -161,8 +221,8 @@ class LLMClient:
                     f"stream: {type(e).__name__}: {e}\n"
                     f"fallback: {type(e2).__name__}: {e2}\n"
                     f"1) В LM Studio нажмите Start Server\n"
-                    f"2) URL вида http://127.0.0.1:1234/v1\n"
-                    f"3) Модель должна быть загружена (Loaded)"
+                    f"2) URL вида http://127.0.0.1:1234/v1 (local) или https://api.proxyapi.ru (external)\n"
+                    f"3) Провайдер: {self._provider_label}, модель: {self.model}"
                 )
 
     async def chat_once(self, messages: List[Dict[str, Any]], **opts) -> str:
@@ -189,3 +249,4 @@ class LLMClient:
                     .get("content")
                     or ""
                 )
+

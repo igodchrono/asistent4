@@ -138,7 +138,7 @@ class ChatEngine:
 
     def __init__(self, app: AppContext, llm: LLMClient | None = None):
         self.app = app
-        self.llm = llm or LLMClient.from_config(app.config)
+        self.llm = llm or LLMClient.from_config(app.config, app)
         app.llm = self.llm
         self.history: List[Dict[str, str]] = []
         self.system_prompt = getattr(app.config, "SYSTEM_PROMPT", "") or "Ты полезный ассистент."
