@@ -739,9 +739,9 @@ class ChatWindow(QtWidgets.QMainWindow):
         if dlg.exec_():
             self.refresh_chrome()
             try:
-                from core.llm_client import LLMClient
+                from core.llm_manager import LLMManager
                 from core.mode import set_mode
-                self.engine.llm = LLMClient.from_config(config)
+                self.engine.llm = LLMManager.from_config(config, self.engine.app)
                 self.engine.app.llm = self.engine.llm
                 self.engine.system_prompt = getattr(config, "SYSTEM_PROMPT", self.engine.system_prompt)
                 set_mode(self.engine.app, str(getattr(config, "ASSISTANT_MODE", "companion") or "companion"))

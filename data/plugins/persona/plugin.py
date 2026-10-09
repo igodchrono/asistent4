@@ -219,12 +219,11 @@ class PluginImpl(Plugin):
     def set_context(self, app: AppContext, emotion: str, source: str = "") -> None:
         raw = str(emotion or "idle").lower().strip()
         fam = family_of(raw)
-        shown = str(app.state.get("emotion_animation") or "")
-        if source == "screen":
-            last_chat = float(app.state.get("last_user_activity") or 0)
-            if last_chat and time.time() - last_chat < 45:
+        if source in ("screen", "companion_mood", "auto_message", "web_search"):
+            if str(app.state.get("imggen_stage") or "idle") != "idle":
                 return
-            if shown and family_of(shown) == fam:
+            last_chat = float(app.state.get("last_user_activity") or 0)
+            if last_chat and time.time() - last_chat < 90:
                 return
         locked = time.time() < self._pose_lock_until
         if locked and source in ("screen", "companion_mood", "auto_message", "web_search", "chat"):
@@ -470,8 +469,13 @@ class PluginImpl(Plugin):
         return ""
 
     def _situation_family(self, app: AppContext) -> str:
+        if str(app.state.get("imggen_stage") or "idle") != "idle":
+            return str(app.state.get("emotion") or "calm")
         last = float(app.state.get("last_user_activity") or 0)
-        if last and time.time() - last < 50:
+        chat = str(app.state.get("chat_emotion") or "")
+        if chat and last and time.time() - last < 180:
+            return chat
+        if last and time.time() - last < 90:
             return str(app.state.get("companion_mood") or app.state.get("emotion") or "idle")
         scr = str(app.state.get("screen_react_emotion") or "")
         if scr and scr not in ("neutral", "idle"):
@@ -521,6 +525,8 @@ class PluginImpl(Plugin):
         if time.time() < self._pose_lock_until:
             return
         if not app.get_plugin_setting(self.id, "show_avatar", True):
+            return
+        if str(app.state.get("imggen_stage") or "idle") != "idle":
             return
         # не дёргать, если пользователь только что писал (кадр сменит on_after_llm)
         last = float(app.state.get("last_user_activity") or 0)

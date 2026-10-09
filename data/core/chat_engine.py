@@ -7,10 +7,11 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from .llm_client import LLMClient
+from .llm_manager import LLMManager
 from .plugin_api import AppContext, HookResult
 from .intents import classify as rule_classify, sanitize_intent, strip_search_fluff
 from . import mode as assistant_mode
+import config
 
 # один поток: tools не блокируют GUI, state не гоняется параллельно
 _TOOL_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="tool")
@@ -136,9 +137,9 @@ class ChatEngine:
                 out.append(ln)
         return "\n".join(out).strip("\n")
 
-    def __init__(self, app: AppContext, llm: LLMClient | None = None):
+    def __init__(self, app: AppContext, llm: LLMManager | None = None):
         self.app = app
-        self.llm = llm or LLMClient.from_config(app.config, app)
+        self.llm = llm or LLMManager.from_config(app.config, app)
         app.llm = self.llm
         self.history: List[Dict[str, str]] = []
         self.system_prompt = getattr(app.config, "SYSTEM_PROMPT", "") or "Ты полезный ассистент."
@@ -419,7 +420,8 @@ class ChatEngine:
             print(f"memory record: {e}", flush=True)
 
     def _schedule_summary(self) -> None:
-
+        if self._economy():
+            return
         mem = self._memory_plugin()
         if mem is None or not hasattr(mem, "maybe_summarize"):
             return
@@ -429,6 +431,11 @@ class ChatEngine:
             loop.create_task(mem.maybe_summarize(self.llm))
         except Exception:
             pass
+
+    @staticmethod
+    def _economy() -> bool:
+        """True = экономный режим: генерация только по запросу пользователя."""
+        return bool(getattr(config, "LLM_ECONOMY_MODE", False))
 
     async def _refine_search_args(self, user_text: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Вытащить нормальный поисковый запрос из фразы пользователя."""
@@ -501,9 +508,17 @@ class ChatEngine:
         return self._strip_anim_for_chat(text)
 
     async def _in_character_line(self, tool_text: str, intent: str) -> str:
-        """Короткая реплика персонажа поверх сырого результата инструмента."""
+        """Короткая реплика только если это не готовый поиск, файл или картинка."""
         raw = (tool_text or "").strip()
         if len(raw) < 12:
+            return raw
+        factual = {
+            "web_search", "download_image", "fetch_page", "fetch_url",
+            "save_search_result", "search_similar", "open_last_search",
+            "send_file", "get_file_link", "list_uploads", "read_uploaded",
+            "imggen", "imggen_edit", "generate_image", "memory_add", "memory_list",
+        }
+        if intent in factual or "[фото:" in raw or "Нашла по запросу" in raw:
             return raw
         cid = (
             self.app.get_active_character()
@@ -589,7 +604,7 @@ class ChatEngine:
             }.get(handled_by, "chat")
             self.app.state["last_intent"] = intent_from
             reply = handled_reply or ""
-            if handled_by not in ("persona", "voice", "phone_media", "files", "screen") and len(reply.strip()) > 24:
+            if handled_by not in ("persona", "voice", "phone_media", "files", "screen", "browser_search") and len(reply.strip()) > 24:
                 reply = await self._in_character_line(reply, intent_from)
             reply = self._after_plugins(plugs, reply)
             self.history.append({"role": "assistant", "content": reply})
@@ -739,6 +754,8 @@ class ChatEngine:
 
     async def generate_proactive(self, instruction: str) -> str:
         """Короткий пинг без записи пользовательской реплики в историю."""
+        if self._economy():
+            return ""
         cid = (
             self.app.get_active_character()
             if hasattr(self.app, "get_active_character")

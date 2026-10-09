@@ -259,6 +259,12 @@ class PluginImpl(Plugin):
                     else:
                         mon = sct.monitors[-1]
                     print(f"screen_vision: capture idx={mon_idx} geo={mon}", flush=True)
+                    app.state["screen_capture_geo"] = {
+                        "left": int(mon.get("left", 0)),
+                        "top": int(mon.get("top", 0)),
+                        "width": int(mon.get("width", 0)),
+                        "height": int(mon.get("height", 0)),
+                    }
                     shot = sct.grab(mon)
                     image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
             except Exception as e:

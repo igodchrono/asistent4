@@ -84,18 +84,6 @@ class LLMClient:
                         api_key = str(ext_key)
                     if ext_model:
                         model = str(ext_model)
-                else:
-                    local_url = app.get_plugin_setting(
-                        "llm_provider", "local_api_url",
-                        "http://127.0.0.1:1234/v1",
-                    )
-                    local_model = app.get_plugin_setting(
-                        "llm_provider", "local_model", "local-model",
-                    )
-                    if local_url:
-                        api_url = str(local_url)
-                    if local_model:
-                        model = str(local_model)
             except Exception:
                 pass
 

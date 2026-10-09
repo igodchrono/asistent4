@@ -13,6 +13,10 @@ TEMPERATURE = 0.75
 MAX_TOKENS = 1000
 LLM_TIMEOUT = 300
 LLM_CONNECT_TIMEOUT = 5
+LLM_ECONOMY_MODE = False  # True = генерация только по запросу пользователя, без авто-суммаризации и проактива
+
+# Сохранённые профили подключения к LLM
+SAVED_PROFILES = []
 
 SYSTEM_PROMPT = (
     "Ты живой ассистент. Характер, стиль и границы — только из карточки персонажа. "

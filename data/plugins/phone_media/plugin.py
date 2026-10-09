@@ -125,7 +125,8 @@ class PluginImpl(Plugin):
     def on_user_message(self, text, app):
         if not app.get_plugin_setting(self.id, "enabled", True):
             return None
-        low = (text or "").strip().lower()
+        low = (text or "").strip().lower().replace("ё", "е")
+        low = low.replace("этоты", "это ты").replace("это-ты", "это ты")
         if not low:
             return None
         stage = str(app.state.get("imggen_stage") or "idle")
@@ -134,17 +135,9 @@ class PluginImpl(Plugin):
             app.state["imggen_stage"] = "idle"
             stage = "idle"
 
-        # Запомнить внешность — выполняется всегда, независимо от стадии
-        if (
-            any(k in low for k in (
-                "запомни это", "запомни внешность", "запомни себя", "запомни образ",
-                "это ты", "это я",
-            ))
-            or (low.startswith("запомни") and any(k in low for k in (
-                "внешность", "образ", "себя", "свой вид", "кадр", "картинк",
-                "фото", "изображени",
-            )))
-        ):
+        if self._wants_show_ref(low):
+            return HookResult(True, self._show_character_ref(app))
+        if self._is_self_remember(low):
             return HookResult(True, self._save_character_ref(app))
 
         if stage == "drafting" and age < 25:
@@ -217,7 +210,7 @@ class PluginImpl(Plugin):
                 return True
         return False
 
-    def _begin_one(self, app, raw: str, wf: str = "") -> None:
+    def _begin_one(self, app, raw: str, wf: str = "", refs: Optional[List[str]] = None, kind: str = "") -> None:
         """Один промпт от модели и сразу очередь ComfyUI. Без второй сборки."""
         low = (raw or "").lower()
         if not wf:
@@ -225,13 +218,29 @@ class PluginImpl(Plugin):
         wf = "edit" if self._family(wf) == "edit" else "t2i"
         if "\nCHANGE:\n" not in (raw or ""):
             app.state["imggen_origin"] = raw
-        if wf == "edit":
-            refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
-        else:
-            refs = self._attached(app)
+        if refs is None:
+            if wf == "edit":
+                refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
+            else:
+                refs = self._attached(app)
+        name, _look = self._char_look(app)
+        about = self._about_character(f"{raw}\n{app.state.get('imggen_request') or ''}", name)
+        if about and not self._wants_fresh(low) and kind != "edit":
+            char_ref = self._character_ref_img(app)
+            if char_ref and not (self._wants_edit(low) and self._attached(app) and kind != "self"):
+                # Не затирать screen-ref (пришёл из _after_scene с source=last)
+                has_screen_ref = bool(refs) and any(
+                    Path(str(r)).stem.startswith(("pick_", "gen_")) for r in refs
+                )
+                if not has_screen_ref:
+                    wf = "edit"
+                    refs = [char_ref]
+                    kind = "self"
+        print(f"imggen: route wf={wf} kind={kind or '-'} about={about} refs={list(refs or [])[:1]}", flush=True)
         job = time.time()
         app.state["imggen_request"] = raw
-        app.state["imggen_refs"] = refs
+        app.state["imggen_refs"] = list(refs or [])
+        app.state["imggen_ref_kind"] = kind or ("edit" if wf == "edit" else "")
         app.state["imggen_stage"] = "drafting"
         app.state["imggen_at"] = time.time()
         app.state["imggen_workflow_hint"] = ""
@@ -345,6 +354,7 @@ class PluginImpl(Plugin):
         base = str(app.state.get("imggen_request") or "")
         low = (text or "").lower()
         refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
+        kind = ""
         if any(k in low for k in ("промпт", "промт")) or not self._wants_edit(low):
             wf = "t2i"
         else:
@@ -356,6 +366,7 @@ class PluginImpl(Plugin):
                 char_ref = self._character_ref_img(app)
             if char_ref:
                 refs = [char_ref]
+                kind = "self"
             else:
                 app.state["imggen_stage"] = "await_prompt"
                 app.state["imggen_workflow_hint"] = "edit"
@@ -370,7 +381,7 @@ class PluginImpl(Plugin):
             "CHANGE:\n"
             f"{text}"
         )
-        self._begin_one(app, merged, wf=wf)
+        self._begin_one(app, merged, wf=wf, refs=refs if wf == "edit" else None, kind=kind)
         app.state["imggen_request"] = (text or "").strip()
         return "обновляю промпт и сразу отправляю в ComfyUI."
 
@@ -387,17 +398,23 @@ class PluginImpl(Plugin):
             fresh = not edit
         attached = self._attached(app)
         refs = self._refs(app) if edit else attached
-        # Если запрос про персонажа — сбрасываем мусор с монитора, берём его ref
         name, _ = self._char_look(app)
         stored = str(app.state.get("imggen_request") or "")
         is_about_char = self._about_character(raw, name) or (stored and self._about_character(stored, name))
-        if is_about_char:
+        kind = ""
+        explicit_edit = self._wants_edit(low) and bool(attached)
+        if is_about_char and not fresh and not named and not explicit_edit:
             char_candidate = self._character_ref_img(app)
             if char_candidate:
-                attached = []
-                refs = [char_candidate]
-                edit = True
-                app.state["imggen_workflow_hint"] = "edit"
+                # Не затирать screen-ref, если это явная правка с source=last
+                hint = str(app.state.get("imggen_workflow_hint") or "")
+                has_screen_ref = bool(refs) and hint in ("edit", "правка", "qwen_edit")
+                if not has_screen_ref:
+                    attached = []
+                    refs = [char_candidate]
+                    edit = True
+                    kind = "self"
+                    app.state["imggen_workflow_hint"] = "edit"
         # Если запрос ссылается на последнее изображение (screen pick / генерация)
         if not edit and not fresh and not named and self._is_refer_to_last(low, app):
             last_img = str(app.state.get("phone_media_last") or "")
@@ -428,10 +445,10 @@ class PluginImpl(Plugin):
         wf = "edit" if edit else "t2i"
         if edit:
             app.state["imggen_refs"] = refs
-        self._begin_one(app, raw, wf=wf)
+        self._begin_one(app, raw, wf=wf, refs=refs if edit else None, kind=kind)
         if edit:
-            if is_about_char and char_ref:
-                return "референс из моих кадров. один промпт под Qwen-Image 2.1 и сразу рисую себя."
+            if kind == "self":
+                return "рисую себя по сохранённому фото. один промпт и сразу в генерацию."
             return "правка референса. один промпт-инструкция и сразу в Qwen-Image 2.1."
         return "картинка по тексту. один промпт под Qwen-Image 2.1 и сразу рисую."
 
@@ -465,7 +482,9 @@ class PluginImpl(Plugin):
                 path = self._resolve_wf("t2i")
                 app.state["imggen_last_wf"] = fam
             app.state["imggen_stage"] = "busy"
-            title = "правка референса" if fam == "edit" else "картинка по тексту"
+            title = "рисую себя по сохранённому фото" if app.state.get("imggen_ref_kind") == "self" else (
+                "правка референса" if fam == "edit" else "картинка по тексту"
+            )
             self._notify(app, f"{title}.\n«{prompt[:700]}»\n\nотправляю в ComfyUI.", None)
             self._start(app, prompt, path, list(refs or []), job)
 
@@ -487,7 +506,19 @@ class PluginImpl(Plugin):
         name, look = self._char_look(app)
         origin, previous, change, fresh = self._split_revision(request)
         about = self._about_character(f"{origin}\n{change or fresh}", name)
-        if fam == "edit":
+        if fam == "edit" and str(app.state.get("imggen_ref_kind") or "") == "self":
+            system = (
+                "Ты пишешь финальную инструкцию для Qwen-Image-2.1 Edit. "
+                "Граф её больше не переписывает. <image1> — фото внешности персонажа, не готовая сцена. "
+                "Сохрани лицо, волосы, уши и узнаваемость человека с <image1>. "
+                "Сцену, позу, одежду и фон собери заново по запросу пользователя. "
+                "На картинке должна быть девушка, не мужчина. "
+                "Английский язык, короткие указания. Обязательно начни с <image1>. "
+                "Не пиши masterpiece, 8k, best quality, highly detailed. "
+                "Не копируй подписи ORIGIN, PREVIOUS, CHANGE. "
+                "Верни только инструкцию, без кавычек вокруг всего текста и без пояснений."
+            )
+        elif fam == "edit":
             system = (
                 "Ты пишешь финальную инструкцию для Qwen-Image-2.1 Edit. "
                 "Граф её больше не переписывает. Это не описание новой картинки. "
@@ -683,8 +714,8 @@ class PluginImpl(Plugin):
 
 
     def _about_character(self, request: str, name: str = "") -> bool:
-        """Картинку про персонажа чата — только если в запросе явно про неё."""
-        low = (request or "").lower()
+        """Сцена с персонажем чата: имя, «себя», «ассистент», «персонаж»."""
+        low = (request or "").lower().replace("ё", "е")
         tokens = []
         cid = (name or "").strip().lower()
         if cid:
@@ -692,15 +723,22 @@ class PluginImpl(Plugin):
         tokens.extend(("лисичка", "лисичку", "лисичке", "лисички", "мила", "милу", "миле", "милы"))
         if any(t and len(t) >= 3 and t in low for t in tokens):
             return True
-        # «меня» без глагола — нельзя, слишком часто в чате
-        if re.search(r"(нарисуй|сгенерируй|сделай картин|сделай изображ)\s+меня", low):
+        if any(w in low for w in (
+            "ассистент", "персонаж", "себя", "тебя", "свой образ", "своем образе",
+            "моя внешность", "твоя внешность", "этот персонаж", "эту героин",
+        )):
             return True
-        return bool(re.search(
-            r"(нарисуй|сгенерируй|сделай картин|сделай изображ).{0,32}(себя|тебя)|"
-            r"\b(себя|тебя)\s+(в|на|у|как|рядом)|"
-            r"(как ты выгля|в сво[её]м образе|этот персонаж|эту героин)",
-            low,
-        ))
+        # Имя / род: если персонаж женский — «девушка» и «она» тоже про него
+        if any(w in low for w in ("девушк", "девочк", "героин")):
+            return True
+        if re.search(r"(нарисуй|сгенерируй|сделай картин|сделай изображ|изобрази|высгенерируй)\s+(меня|мне)\b", low):
+            return True
+        if re.search(r"\b(где я|я сижу|я лежу|со мной|меня на|меня в)\b", low):
+            return True
+        # «как ты <действие>» — явно про персонажа
+        if re.search(r"\bкак ты\s+\w+[её]шь\b", low):
+            return True
+        return False
 
     def _char_look(self, app) -> str:
         name = ""
@@ -856,7 +894,10 @@ class PluginImpl(Plugin):
         )
 
     def _character_ref_img(self, app) -> str:
-        """Найти референс персонажа: ref.png > ref.jpg > первый кадр из images/."""
+        """Сохранённое фото внешности: state, затем images/ref.*"""
+        current = str(app.state.get("character_self_ref") or "")
+        if current and Path(current).is_file():
+            return current
         try:
             name = ""
             if hasattr(app, "get_active_character"):
@@ -869,17 +910,12 @@ class PluginImpl(Plugin):
             img_dir = character_dir(name) / "images"
             if not img_dir.is_dir():
                 return ""
-            # Сначала ищем явный референс
             for stem in ("ref", "reference"):
                 for ext in (".png", ".jpg", ".jpeg", ".webp"):
                     p = img_dir / f"{stem}{ext}"
                     if p.is_file():
+                        app.state["character_self_ref"] = str(p)
                         return str(p)
-            # fallback: первый кадр в папке
-            for ext in (".png", ".jpg", ".jpeg", ".webp"):
-                files = sorted(img_dir.glob(f"*{ext}"))
-                if files:
-                    return str(files[0])
         except Exception:
             pass
         return ""
@@ -916,9 +952,45 @@ class PluginImpl(Plugin):
             dest.write_bytes(src.read_bytes())
             from character_catalog import invalidate_card_cache
             invalidate_card_cache()
-            return f"запомнила! это теперь мой референс."
+            app.state["character_self_ref"] = str(dest)
+            print(f"imggen self ref saved: {dest}", flush=True)
+            return f"запомнила. это я. когда рисую себя, беру это фото.\n[фото: {dest}]"
         except Exception as ex:
             return f"не смогла сохранить: {ex}"
+
+    @staticmethod
+    def _is_self_remember(text: str) -> bool:
+        low = (text or "").lower().replace("ё", "е")
+        low = re.sub(r"\[вложения:.*?\]", " ", low, flags=re.I | re.S)
+        low = low.replace("этоты", "это ты").replace("это-ты", "это ты")
+        low = " ".join(low.split())
+        if any(k in low for k in (
+            "запомни это", "запомни внешность", "запомни себя", "запомни образ",
+            "это ты", "это я", "это твоя внешность", "это теперь ты", "это теперь я",
+        )):
+            return True
+        return low.startswith("запомни") and any(k in low for k in (
+            "внешность", "образ", "себя", "свой вид", "кадр", "картинк",
+            "фото", "изображени",
+        ))
+
+    @staticmethod
+    def _wants_show_ref(low: str) -> bool:
+        text = (low or "").lower().replace("ё", "е")
+        return any(k in text for k in (
+            "как ты меня запомнила",
+            "как ты меня помнишь",
+            "покажи референс",
+            "твой референс",
+            "какое фото ты запомнила",
+            "покажи как ты меня",
+        ))
+
+    def _show_character_ref(self, app) -> str:
+        path = self._character_ref_img(app)
+        if not path:
+            return "я ещё не запомнила своё фото. прикрепи картинку и скажи «запомни, это ты»."
+        return f"вот как я себя запомнила.\n[фото: {path}]"
 
     def _attached(self, app) -> List[str]:
         files = list(app.state.get("pending_attachments") or []) + list(app.state.get("last_attachments") or [])

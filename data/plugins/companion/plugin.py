@@ -69,6 +69,7 @@ class PluginImpl(Plugin):
         self._last_suggest_at = 0.0
         self._last_scene = "idle"
         self._last_scene_at = 0.0
+        self._last_comment_key = ""
         self._patterns: Dict[str, int] = {}
         self.app: Optional[AppContext] = None
 
@@ -86,7 +87,7 @@ class PluginImpl(Plugin):
             self._timer.start()
         except Exception as e:
             print(f"companion: timer {e}", flush=True)
-        print("companion 1.2: mood+scene comments → chat", flush=True)
+        print("companion 1.3: comment on real scene change", flush=True)
 
     def on_shutdown(self, app: AppContext) -> None:
         if self._timer is not None:
@@ -306,6 +307,14 @@ class PluginImpl(Plugin):
         return "idle", title, 0.4
 
     def _react_scene_mood(self, app: AppContext, scene: str) -> None:
+        if str(app.state.get("imggen_stage") or "idle") != "idle":
+            return
+        last = float(app.state.get("last_user_activity") or 0)
+        if last and time.time() - last < 90:
+            return
+        persona = app.plugins.get("persona")
+        if persona is not None and time.time() < float(getattr(persona, "_pose_lock_until", 0) or 0):
+            return
         nsfw_ok = bool(app.state.get("character_nsfw"))
         try:
             from core.mode import is_work
@@ -348,30 +357,8 @@ class PluginImpl(Plugin):
         return core not in bare and low not in bare
 
     def _maybe_suggest(self, app: AppContext, scene: str, title: str, conf: float) -> None:
-        if not title or self._own_title(title):
-            self._dbg(app, "skip: своё окно или пустой заголовок")
-            return
-        if not self._title_interesting(title) and scene in ("idle", "browsing", "chat"):
-            self._dbg(app, f"skip: пустой заголовок «{title[:50]}» scene={scene}")
-            return
-        if conf < 0.55 and scene == "idle":
-            self._dbg(app, f"skip: low conf={conf:.2f}")
-            return
-        try:
-            from core.mode import is_work
-            work = is_work(app)
-        except Exception:
-            work = False
-        if work and scene in ("nsfw", "movie"):
-            self._dbg(app, "skip: work mode")
-            return
-        if scene == "browsing" and not app.get_plugin_setting(self.id, "comment_browsing", True):
-            self._dbg(app, "skip: browsing off")
-            return
-        cd = int(app.get_plugin_setting(self.id, "suggest_cooldown_min", 6) or 6) * 60
-        wait = time.time() - self._last_suggest_at
-        if self._last_suggest_at and wait < cd:
-            self._dbg(app, f"skip: cooldown {int(wait)}s < {cd}s")
+        if str(app.state.get("imggen_stage") or "idle") != "idle":
+            self._dbg(app, "skip: generation")
             return
         window = getattr(app, "window", None) or app.state.get("gui")
         if window is None:
@@ -380,23 +367,50 @@ class PluginImpl(Plugin):
         if getattr(window, "_busy", False):
             self._dbg(app, "skip: chat busy")
             return
-        changed_at = float(app.state.get("companion_scene_changed_at") or self._last_scene_at or 0)
-        age = time.time() - changed_at if changed_at else 999
-        if age < 8:
-            self._dbg(app, f"skip: scene fresh {age:.0f}s")
+        last_user = float(app.state.get("last_user_activity") or 0)
+        if last_user and time.time() - last_user < 20:
+            self._dbg(app, "skip: user typing")
             return
-        chance = int(app.get_plugin_setting(self.id, "suggest_chance", 70) or 70)
-        fresh = age < 120
-        if not fresh and random.randint(1, 100) > max(0, min(100, chance)):
-            self._dbg(app, "skip: chance")
+        title_use = title
+        scene_use = scene
+        if not title or self._own_title(title):
+            title_use = str(app.state.get("companion_last_foreign_title") or "")
+            scene_use = str(app.state.get("companion_last_foreign_scene") or scene_use)
+            if not title_use or scene_use in ("", "idle"):
+                self._dbg(app, "skip: своё окно или пустой заголовок")
+                return
+        else:
+            if self._title_interesting(title) or scene not in ("idle", "browsing"):
+                app.state["companion_last_foreign_title"] = title
+                app.state["companion_last_foreign_scene"] = scene
+        if scene_use == "idle" and conf < 0.55:
+            self._dbg(app, f"skip: low conf={conf:.2f}")
             return
-        self._last_suggest_at = time.time()
-        text = self._suggest_text(app, scene, title)
-        if not text:
-            self._dbg(app, f"queued/empty scene={scene}")
+        if not self._title_interesting(title_use) and scene_use in ("idle", "browsing", "chat"):
+            self._dbg(app, f"skip: пустой заголовок «{title_use[:50]}» scene={scene_use}")
             return
-        ok = self._publish(app, text)
-        self._dbg(app, f"{'sent' if ok else 'publish-fail'} scene={scene} «{text[:80]}»")
+        try:
+            from core.mode import is_work
+            work = is_work(app)
+        except Exception:
+            work = False
+        if work and scene_use in ("nsfw", "movie"):
+            self._dbg(app, "skip: work mode")
+            return
+        if scene_use == "browsing" and not app.get_plugin_setting(self.id, "comment_browsing", True):
+            self._dbg(app, "skip: browsing off")
+            return
+        key = f"{scene_use}|{(title_use or '')[:80]}"
+        if key == self._last_comment_key or key == getattr(self, "_comment_inflight", ""):
+            return
+        cd = int(app.get_plugin_setting(self.id, "suggest_cooldown_min", 6) or 6) * 60
+        wait = time.time() - self._last_suggest_at
+        if self._last_suggest_at and wait < cd:
+            self._dbg(app, f"skip: cooldown {int(wait)}s < {cd}s")
+            return
+        text = self._suggest_text(app, scene_use, title_use)
+        if text:
+            self._mark_comment(app, key, text)
 
     def _suggest_text(self, app: AppContext, scene: str, title: str) -> str:
         static = self._static_line(scene, title)
@@ -423,15 +437,16 @@ class PluginImpl(Plugin):
                 except Exception as e:
                     print(f"companion: llm comment {e}", flush=True)
                     out = ""
-                text = (out or "").strip() or static
+                text = (out or "").strip() or self._static_line(scene, title)
                 if text:
-                    self._publish(app, text)
+                    self._mark_comment(app, f"{scene}|{(title or '')[:80]}", text)
 
             try:
                 loop = asyncio.get_event_loop()
             except RuntimeError:
                 return static
             if loop.is_running():
+                self._comment_inflight = f"{scene}|{(title or '')[:80]}"
                 asyncio.ensure_future(_run())
                 return ""
             return static
@@ -471,6 +486,18 @@ class PluginImpl(Plugin):
             opts = [f"Сейчас у тебя «{hint}». Как оно?"]
         return random.choice(opts)
 
+    def _mark_comment(self, app: AppContext, key: str, text: str) -> None:
+        if key and key == self._last_comment_key:
+            return
+        self._comment_inflight = ""
+        ok = self._publish(app, text)
+        if not ok:
+            self._dbg(app, f"publish-fail «{(text or '')[:80]}»")
+            return
+        self._last_comment_key = key
+        self._last_suggest_at = time.time()
+        self._dbg(app, f"sent «{(text or '')[:80]}»")
+
     def _publish(self, app: AppContext, text: str) -> bool:
         text = (text or "").strip()
         if not text:
@@ -494,6 +521,11 @@ class PluginImpl(Plugin):
         return False
 
     def _mood_drift(self, app: AppContext) -> None:
+        if str(app.state.get("imggen_stage") or "idle") != "idle":
+            return
+        last_user = float(app.state.get("last_user_activity") or 0)
+        if last_user and time.time() - last_user < 600:
+            return
         last = float(app.state.get("companion_mood_at") or 0)
         if last and time.time() - last < 480:
             return

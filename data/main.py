@@ -25,7 +25,7 @@ import config
 from settings_manager import apply_to_config
 from core.plugin_api import AppContext
 from core.plugin_loader import PluginLoader
-from core.llm_client import LLMClient
+from core.llm_manager import LLMManager
 from core.chat_engine import ChatEngine
 from gui import ChatWindow
 
@@ -95,7 +95,7 @@ def main() -> None:
         splash.say("ядро", 15)
 
     ctx = AppContext(config)
-    ctx.llm = LLMClient.from_config(config)
+    ctx.llm = LLMManager.from_config(config, ctx)
     try:
         from core.mode import get_mode
         ctx.state["assistant_mode"] = get_mode(config)
@@ -114,7 +114,9 @@ def main() -> None:
     async def _ping():
         try:
             ok = await ctx.llm.ping()
-            print(f"LLM {config.API_URL}: {'online' if ok else 'offline'}", flush=True)
+            prov = getattr(ctx.llm, "provider_type", "api") or "api"
+            model = getattr(ctx.llm, "model", "?")
+            print(f"LLM: {prov} ({model}) {'online' if ok else 'offline'}", flush=True)
         except Exception as e:
             print(f"LLM ping: {e}", flush=True)
 
@@ -151,7 +153,8 @@ def main() -> None:
 
     with loop:
         loop.create_task(_ping())
-        loop.create_task(_boot_diary())
+        if not getattr(config, "LLM_ECONOMY_MODE", False):
+            loop.create_task(_boot_diary())
         loop.run_forever()
 
 

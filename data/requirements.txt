@@ -5,4 +5,8 @@ aiohttp>=3.8
 Pillow>=10.0
 mss>=9.0
 
+# Для .exe провайдера — любой LLM сервер
+# llama-cpp-python>=0.2.0
+# См. https://github.com/abetlen/llama-cpp-python#installation
+
 # Голос — отдельно: pip install -r REQUIREMENTS_VOICE.txt

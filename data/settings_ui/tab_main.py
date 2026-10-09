@@ -1,4 +1,4 @@
-# settings_ui/tab_main.py — Основные: LLM API
+# settings_ui/tab_main.py — Основные: LLM API + сохранённые профили
 from PyQt5 import QtWidgets, QtCore
 import json
 import urllib.request
@@ -43,6 +43,34 @@ class MainTabMixin:
         self.conn_status.setStyleSheet("color: #aaa;")
         layout.addWidget(self.conn_status)
 
+        # ── Сохранённые профили подключения ────────────────────────
+        sep1 = QtWidgets.QFrame()
+        sep1.setFrameShape(QtWidgets.QFrame.HLine)
+        sep1.setFrameShadow(QtWidgets.QFrame.Sunken)
+        layout.addWidget(sep1)
+
+        prof_label = QtWidgets.QLabel("💾 Сохранённые профили подключения:")
+        prof_label.setStyleSheet("font-weight: bold; margin-top: 6px;")
+        layout.addWidget(prof_label)
+
+        prof_row = QtWidgets.QHBoxLayout()
+        self.profile_combo = QtWidgets.QComboBox()
+        self.profile_combo.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed
+        )
+        self.profile_combo.currentIndexChanged.connect(self._on_profile_selected)
+        prof_row.addWidget(self.profile_combo, 1)
+
+        self.btn_save_profile = QtWidgets.QPushButton("➕ Сохранить как…")
+        self.btn_save_profile.clicked.connect(self._save_profile_dialog)
+        self.btn_del_profile = QtWidgets.QPushButton("🗑️ Удалить")
+        self.btn_del_profile.clicked.connect(self._delete_profile)
+        prof_row.addWidget(self.btn_save_profile)
+        prof_row.addWidget(self.btn_del_profile)
+        layout.addLayout(prof_row)
+
+        # ── остальные настройки ────────────────────────────────────
+
         layout.addWidget(QtWidgets.QLabel("Temperature (0.0 – 2.0):"))
         self.temperature_edit = QtWidgets.QLineEdit()
         layout.addWidget(self.temperature_edit)
@@ -63,6 +91,10 @@ class MainTabMixin:
         self.history_tail_spin.setValue(40)
         layout.addWidget(self.history_tail_spin)
 
+        self.economy_check = QtWidgets.QCheckBox("🌱 Экономный режим — генерация только по запросу")
+        self.economy_check.setToolTip("Отключает авто-суммаризацию, проактивные сообщения и инициативные генерации. Ассистент отвечает только когда вы её спросили.")
+        layout.addWidget(self.economy_check)
+
         layout.addWidget(QtWidgets.QLabel("System prompt (ядро):"))
         self.system_edit = QtWidgets.QPlainTextEdit()
         self.system_edit.setMaximumHeight(120)
@@ -72,6 +104,84 @@ class MainTabMixin:
 
     def _base_url(self) -> str:
         return normalize_api_url(self.api_url_edit.text().strip() or config.API_URL)
+
+    # ── профили ─────────────────────────────────────────────────────
+
+    def _rebuild_profile_combo(self) -> None:
+        profiles = list(getattr(config, "SAVED_PROFILES", []) or [])
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.clear()
+        self.profile_combo.addItem("— выберите профиль —", None)
+        for p in profiles:
+            name = (p.get("name") or "").strip()
+            if name:
+                self.profile_combo.addItem(name, name)
+        self.profile_combo.blockSignals(False)
+
+    def _on_profile_selected(self, idx: int) -> None:
+        name = self.profile_combo.itemData(idx)
+        if not name:
+            return
+        profiles = list(getattr(config, "SAVED_PROFILES", []) or [])
+        for p in profiles:
+            if p.get("name") == name:
+                self.api_url_edit.setText(p.get("api_url", ""))
+                self.api_key_edit.setText(p.get("api_key", ""))
+                model = p.get("model", "")
+                if model:
+                    self.model_combo.setEditText(model)
+                return
+
+    def _save_profile_dialog(self) -> None:
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Сохранить профиль", "Название профиля:",
+            text=""
+        )
+        if not ok or not name:
+            return
+        name = name.strip()
+        if not name:
+            return
+        profile = {
+            "name": name,
+            "api_url": normalize_api_url(self.api_url_edit.text().strip()),
+            "api_key": self.api_key_edit.text().strip() or "lm-studio",
+            "model": self.model_combo.currentText().strip(),
+        }
+        profiles = list(getattr(config, "SAVED_PROFILES", []) or [])
+        for i, p in enumerate(profiles):
+            if p.get("name") == name:
+                profiles[i] = profile
+                break
+        else:
+            profiles.append(profile)
+        config.SAVED_PROFILES = profiles
+        self._rebuild_profile_combo()
+        idx = self.profile_combo.findData(name)
+        if idx >= 0:
+            self.profile_combo.setCurrentIndex(idx)
+        self.conn_status.setStyleSheet("color: #0f0;")
+        self.conn_status.setText(f"✅ Профиль «{name}» сохранён")
+
+    def _delete_profile(self) -> None:
+        name = self.profile_combo.currentData()
+        if not name:
+            return
+        reply = QtWidgets.QMessageBox.question(
+            self, "Удалить профиль",
+            f"Удалить профиль «{name}»?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        profiles = list(getattr(config, "SAVED_PROFILES", []) or [])
+        config.SAVED_PROFILES = [p for p in profiles if p.get("name") != name]
+        self._rebuild_profile_combo()
+        self.conn_status.setStyleSheet("color: #aaa;")
+        self.conn_status.setText(f"🗑️ Профиль «{name}» удалён")
+
+    # ── список моделей / тест ───────────────────────────────────────
 
     def load_models_list(self):
         api_url = self._base_url()
@@ -85,7 +195,7 @@ class MainTabMixin:
             req = urllib.request.Request(
                 url,
                 headers={
-                    "Authorization": f"Bearer {key}",
+                    "Authorization": f"******",
                     "Content-Type": "application/json",
                 },
             )
@@ -138,7 +248,7 @@ class MainTabMixin:
         try:
             req = urllib.request.Request(
                 url, data=body,
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                headers={"Authorization": f"******", "Content-Type": "application/json"},
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -149,6 +259,8 @@ class MainTabMixin:
         except Exception as e:
             self.conn_status.setStyleSheet("color: #f66;")
             self.conn_status.setText(f"Нет связи: {url}\n{e}")
+
+    # ── загрузка / сохранение ───────────────────────────────────────
 
     def load_main_settings(self) -> None:
         self.api_url_edit.setText(str(getattr(config, "API_URL", "")))
@@ -165,6 +277,8 @@ class MainTabMixin:
         except (TypeError, ValueError):
             self.history_tail_spin.setValue(40)
         self.system_edit.setPlainText(str(getattr(config, "SYSTEM_PROMPT", "") or ""))
+        self.economy_check.setChecked(bool(getattr(config, "LLM_ECONOMY_MODE", False)))
+        self._rebuild_profile_combo()
         QtCore.QTimer.singleShot(300, self.load_models_list)
 
     def collect_main_settings(self) -> dict:
@@ -185,4 +299,6 @@ class MainTabMixin:
             "ASSISTANT_MODE": str(self.mode_combo.currentData() or "companion"),
             "HISTORY_TAIL": int(self.history_tail_spin.value()),
             "SYSTEM_PROMPT": self.system_edit.toPlainText(),
+            "LLM_ECONOMY_MODE": self.economy_check.isChecked(),
+            "SAVED_PROFILES": list(getattr(config, "SAVED_PROFILES", []) or []),
         }

@@ -59,7 +59,7 @@ class PluginImpl(Plugin):
     def on_load(self, app: AppContext) -> None:
         self.app = app
         app.state["screen_plugin"] = self
-        print("👁 screen 1.2: vision+react+pick", flush=True)
+        print("👁 screen 1.3: save original, crop only if download fails", flush=True)
         # wrap original vision tools if folder still exists
         try:
             from plugins.screen.vision import PluginImpl as Vision
@@ -96,7 +96,8 @@ class PluginImpl(Plugin):
             return None
         if str(app.state.get("imggen_stage") or "idle") != "idle":
             return None
-        if not self._wants_pick(low):
+        save = self._wants_save_screen(low, app)
+        if not save and not self._wants_pick(low):
             return None
         job = time.time()
         app.state["screen_pick_busy"] = True
@@ -104,7 +105,23 @@ class PluginImpl(Plugin):
         threading.Thread(
             target=self._pick_thread, args=(app, text, job, False), name="screen-pick", daemon=True
         ).start()
+        if save:
+            return HookResult(True, "беру оригинал с экрана, не скриншот.")
         return HookResult(True, "смотрю выбранный экран и выбираю.")
+
+    @staticmethod
+    def _wants_save_screen(low: str, app) -> bool:
+        keys = (
+            "сохрани картин", "сохрани фото", "сохрани изображ",
+            "сохрани этот кадр", "сохрани кадр", "сохрани с экран",
+            "скачай с экран", "скачай эту картин", "скачай это фото",
+            "скачай это изображ",
+        )
+        if not any(k in (low or "") for k in keys):
+            return False
+        if re.search(r"\b\d{1,2}\b", low or "") and str(app.state.get("last_search_mode") or "") == "images":
+            return False
+        return True
 
     @staticmethod
     def _wants_pick(low: str) -> bool:
@@ -177,11 +194,16 @@ class PluginImpl(Plugin):
         if not bbox:
             fail("на экране не вижу отдельную картинку. оставь сетку на выбранном мониторе.")
             return
-        saved = self._download_original(app, data)
-        if saved is None:
-            saved = self._save_screenshot(app, Path(path))
+        saved = None
+        if not quiet:
+            saved = self._grab_original(app, bbox)
+        if saved is not None:
+            app.state["screen_save_kind"] = "original"
+        else:
+            saved = self._crop(app, Path(path), bbox)
+            app.state["screen_save_kind"] = "crop"
         if saved is None or not saved.exists():
-            self._finish(app, job, "вижу кадр, но не смогла сохранить его себе.", None, "")
+            fail("вижу кадр, но не смогла сохранить оригинал и вырезать картинку.")
             return
         app.state["phone_media_last"] = str(saved)
         app.state["screen_last_at"] = time.time()  # для _after_scene: свежий скриншот = референс
@@ -271,6 +293,237 @@ class PluginImpl(Plugin):
         root.mkdir(parents=True, exist_ok=True)
         return root
 
+    def _grab_original(self, app, bbox: Tuple[float, float, float, float]) -> Optional[Path]:
+        """Клик по картинке: адрес и скачивание, иначе «Сохранить как»."""
+        import sys
+        if not sys.platform.startswith("win"):
+            return None
+        geo = app.state.get("screen_capture_geo") or {}
+        try:
+            left, top = int(geo.get("left", 0)), int(geo.get("top", 0))
+            width, height = int(geo.get("width", 0)), int(geo.get("height", 0))
+        except Exception:
+            return None
+        if width < 80 or height < 80:
+            return None
+        x, y, w, h = bbox
+        px = int(left + (x + w / 2.0) * width)
+        py = int(top + (y + h / 2.0) * height)
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+        except Exception as e:
+            print(f"screen save: no user32 {e}", flush=True)
+            return None
+        point = self._cursor(user32)
+        print(f"screen save: mouse {px},{py}", flush=True)
+        try:
+            self._cursor_set(user32, px, py)
+            time.sleep(0.05)
+            for phrase in ("копировать адрес", "copy image address"):
+                self._right_click(user32)
+                time.sleep(0.22)
+                self._clear_clipboard(user32)
+                self._type_text(user32, phrase)
+                time.sleep(0.08)
+                self._tap(user32, 0x0D)
+                time.sleep(0.35)
+                url = self._clipboard_text(user32).strip()
+                if url.startswith("http://") or url.startswith("https://"):
+                    saved = self._download_url(app, url)
+                    if saved:
+                        print(f"screen save: downloaded {saved}", flush=True)
+                        return saved
+                self._tap(user32, 0x1B)
+                time.sleep(0.12)
+                self._cursor_set(user32, px, py)
+            since = time.time()
+            for phrase in ("сохранить изображение", "save image"):
+                self._right_click(user32)
+                time.sleep(0.22)
+                self._type_text(user32, phrase)
+                time.sleep(0.08)
+                self._tap(user32, 0x0D)
+                if not self._wait_save_dialog(user32, 1.6):
+                    self._tap(user32, 0x1B)
+                    time.sleep(0.1)
+                    self._cursor_set(user32, px, py)
+                    continue
+                dest = self._pick_dir(app) / f"save_{int(time.time())}"
+                self._tap_ctrl(user32, 0x41)
+                time.sleep(0.05)
+                self._type_text(user32, str(dest))
+                time.sleep(0.05)
+                self._tap(user32, 0x0D)
+                found = self._wait_new_image(since, dest)
+                if found:
+                    print(f"screen save: dialog {found}", flush=True)
+                    return found
+                self._tap(user32, 0x1B)
+        except Exception as e:
+            print(f"screen save: {e}", flush=True)
+            return None
+        finally:
+            if point is not None:
+                self._cursor_set(user32, point[0], point[1])
+        return None
+
+    def _download_url(self, app, url: str) -> Optional[Path]:
+        browser = app.plugins.get("browser_search")
+        if browser is None or not hasattr(browser, "_http_get"):
+            return None
+        try:
+            data, ctype, final = browser._http_get(url)
+        except Exception as e:
+            print(f"screen save: download {e}", flush=True)
+            return None
+        if len(data) < 80:
+            return None
+        ext = ".jpg"
+        if hasattr(browser, "_ext_from"):
+            ext = browser._ext_from(data, ctype, final or url) or ".jpg"
+        if ext not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
+            return None
+        dest = self._pick_dir(app) / f"save_{int(time.time())}{ext}"
+        dest.write_bytes(data)
+        return dest
+
+    def _wait_new_image(self, since: float, dest: Path) -> Optional[Path]:
+        folders = [dest.parent, Path.home() / "Downloads"]
+        deadline = time.time() + 4
+        while time.time() < deadline:
+            for folder in folders:
+                if not folder.is_dir():
+                    continue
+                for item in folder.iterdir():
+                    if item.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}:
+                        continue
+                    try:
+                        if item.stat().st_mtime < since - 1:
+                            continue
+                    except Exception:
+                        continue
+                    if item.parent == dest.parent:
+                        return item
+                    target = dest.parent / f"save_{int(time.time())}{item.suffix.lower()}"
+                    try:
+                        target.write_bytes(item.read_bytes())
+                    except Exception:
+                        return item
+                    return target
+            time.sleep(0.2)
+        return None
+
+    @staticmethod
+    def _cursor(user32):
+        import ctypes
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+        pt = POINT()
+        if not user32.GetCursorPos(ctypes.byref(pt)):
+            return None
+        return int(pt.x), int(pt.y)
+
+    @staticmethod
+    def _cursor_set(user32, x: int, y: int) -> None:
+        import ctypes
+        user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+        user32.SetCursorPos(int(x), int(y))
+
+    @staticmethod
+    def _right_click(user32) -> None:
+        user32.mouse_event(0x0008, 0, 0, 0, 0)
+        user32.mouse_event(0x0010, 0, 0, 0, 0)
+
+    @staticmethod
+    def _tap(user32, vk: int) -> None:
+        user32.keybd_event(vk, 0, 0, 0)
+        user32.keybd_event(vk, 0, 2, 0)
+
+    @staticmethod
+    def _tap_ctrl(user32, vk: int) -> None:
+        user32.keybd_event(0x11, 0, 0, 0)
+        user32.keybd_event(vk, 0, 0, 0)
+        user32.keybd_event(vk, 0, 2, 0)
+        user32.keybd_event(0x11, 0, 2, 0)
+
+    @staticmethod
+    def _type_text(user32, text: str) -> None:
+        import ctypes
+        ulong_ptr = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [
+                ("wVk", ctypes.c_ushort),
+                ("wScan", ctypes.c_ushort),
+                ("dwFlags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ulong_ptr),
+            ]
+
+        class INPUT(ctypes.Structure):
+            _fields_ = [("type", ctypes.c_ulong), ("ki", KEYBDINPUT)]
+
+        if ctypes.sizeof(ctypes.c_void_p) == 8 and ctypes.sizeof(INPUT) < 40:
+            class INPUT(ctypes.Structure):
+                _fields_ = [
+                    ("type", ctypes.c_ulong),
+                    ("ki", KEYBDINPUT),
+                    ("pad", ctypes.c_ulonglong),
+                ]
+
+        for ch in text:
+            down = INPUT()
+            down.type = 1
+            down.ki.wScan = ord(ch)
+            down.ki.dwFlags = 0x0004
+            up = INPUT()
+            up.type = 1
+            up.ki.wScan = ord(ch)
+            up.ki.dwFlags = 0x0004 | 0x0002
+            user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(down))
+            user32.SendInput(1, ctypes.byref(up), ctypes.sizeof(up))
+            time.sleep(0.02)
+
+    @staticmethod
+    def _clear_clipboard(user32) -> None:
+        if user32.OpenClipboard(None):
+            user32.EmptyClipboard()
+            user32.CloseClipboard()
+
+    @staticmethod
+    def _clipboard_text(user32) -> str:
+        import ctypes
+        if not user32.OpenClipboard(None):
+            return ""
+        try:
+            user32.GetClipboardData.restype = ctypes.c_void_p
+            handle = user32.GetClipboardData(13)
+            if not handle:
+                return ""
+            kernel32 = ctypes.windll.kernel32
+            kernel32.GlobalLock.restype = ctypes.c_wchar_p
+            kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+            kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+            text = kernel32.GlobalLock(handle) or ""
+            kernel32.GlobalUnlock(handle)
+            return str(text)
+        finally:
+            user32.CloseClipboard()
+
+    @staticmethod
+    def _wait_save_dialog(user32, timeout: float) -> bool:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(64)
+        end = time.time() + timeout
+        while time.time() < end:
+            hwnd = user32.GetForegroundWindow()
+            user32.GetClassNameW(hwnd, buf, 64)
+            if buf.value == "#32770":
+                return True
+            time.sleep(0.1)
+        return False
+
     def _crop(self, app, src: Path, bbox: Tuple[float, float, float, float]) -> Optional[Path]:
         try:
             from PIL import Image
@@ -289,17 +542,17 @@ class PluginImpl(Plugin):
         bottom = min(H, int((y + h) * H))
         if right - left < 64 or bottom - top < 64:
             return None
-        dest = self._pick_dir(app) / f"pick_{int(time.time())}.jpg"
-        im.crop((left, top, right, bottom)).save(dest, format="JPEG", quality=90)
+        dest = self._pick_dir(app) / f"pick_{int(time.time())}.png"
+        im.crop((left, top, right, bottom)).save(dest, format="PNG")
         print(f"screen pick: crop {dest}", flush=True)
         return dest
 
     def _save_screenshot(self, app, src: Path) -> Optional[Path]:
         """Сохранить полный скриншот вместо обрезка — качество выше."""
         try:
-            dest = self._pick_dir(app) / f"pick_{int(time.time())}.jpg"
+            dest = self._pick_dir(app) / f"pick_{int(time.time())}.png"
             from PIL import Image
-            Image.open(src).convert("RGB").save(dest, format="JPEG", quality=92)
+            Image.open(src).convert("RGB").save(dest, format="PNG")
             print(f"screen pick: full screenshot {dest}", flush=True)
             return dest
         except Exception as e:
@@ -351,9 +604,12 @@ class PluginImpl(Plugin):
                 if persona and hasattr(persona, "set_context"):
                     try:
                         persona.set_context(app, emotion, "chat")
+                        persona._pose_lock_until = time.time() + 90
                     except Exception as e:
                         print(f"screen pick emotion: {e}", flush=True)
             msg = text or ""
+            if path and path.exists() and str(app.state.get("screen_save_kind") or "") == "crop":
+                msg = (msg + "\nоригинал не скачался, это обрезка экрана.").strip()
             if path and path.exists():
                 msg = msg + f"\n[фото: {path}]"
             if not msg.strip():
@@ -412,6 +668,11 @@ class PluginImpl(Plugin):
             return
         app.state["screen_react_emotion"] = emo
         print(f"screen: {emo}/{anim} conf={conf:.2f} ← {title[:70]!r}", flush=True)
+        if str(app.state.get("imggen_stage") or "idle") != "idle":
+            return
+        last_chat = float(app.state.get("last_user_activity") or 0)
+        if last_chat and time.time() - last_chat < 90:
+            return
         persona = (
             app.plugins.get("persona")
             or app.state.get("emotion_plugin")
