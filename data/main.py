@@ -153,7 +153,7 @@ def main() -> None:
 
     with loop:
         loop.create_task(_ping())
-        if not getattr(config, "LLM_ECONOMY_MODE", False):
+        if not getattr(config, "LLM_ECONOMY_MODE", False) and str(getattr(config, "LLM_CONTEXT_MODE", "full") or "full") != "lean":
             loop.create_task(_boot_diary())
         loop.run_forever()
 

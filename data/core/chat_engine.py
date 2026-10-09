@@ -200,6 +200,9 @@ class ChatEngine:
             ruled = sanitize_intent(ruled)
             print(f"intent rules: {ruled.get('intent')} args={ruled.get('args')}", flush=True)
             return ruled
+        if self._lean():
+            print("intent: lean, без классификатора", flush=True)
+            return {"intent": "chat", "args": {}, "speak": ""}
         ctx = self._context_block()
         messages = [
             {"role": "system", "content": INTENT_SCHEMA + "\n\n" + ctx},
@@ -420,7 +423,7 @@ class ChatEngine:
             print(f"memory record: {e}", flush=True)
 
     def _schedule_summary(self) -> None:
-        if self._economy():
+        if self._economy() or self._lean():
             return
         mem = self._memory_plugin()
         if mem is None or not hasattr(mem, "maybe_summarize"):
@@ -436,6 +439,11 @@ class ChatEngine:
     def _economy() -> bool:
         """True = экономный режим: генерация только по запросу пользователя."""
         return bool(getattr(config, "LLM_ECONOMY_MODE", False))
+
+    @staticmethod
+    def _lean() -> bool:
+        """True = в модель уходит только фраза пользователя, без карточки и истории."""
+        return str(getattr(config, "LLM_CONTEXT_MODE", "full") or "full") == "lean"
 
     async def _refine_search_args(self, user_text: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Вытащить нормальный поисковый запрос из фразы пользователя."""
@@ -463,7 +471,7 @@ class ChatEngine:
             or any(w in q.lower() for w in ("можешь", "пожалуйста", "хочу", "давай", "мне нужно"))
             or q.lower() == (user_text or "").lower()
         )
-        if need_llm:
+        if need_llm and not self._lean():
             try:
                 prompt = (
                     "Преврати фразу пользователя в короткий поисковый запрос для Google (3–8 слов). "
@@ -510,7 +518,7 @@ class ChatEngine:
     async def _in_character_line(self, tool_text: str, intent: str) -> str:
         """Короткая реплика только если это не готовый поиск, файл или картинка."""
         raw = (tool_text or "").strip()
-        if len(raw) < 12:
+        if len(raw) < 12 or self._lean():
             return raw
         factual = {
             "web_search", "download_image", "fetch_page", "fetch_url",
@@ -697,33 +705,37 @@ class ChatEngine:
         except Exception:
             card = ""
 
-        if card:
-            system = (
-                "Ты персонаж из карточки, не общий ассистент. "
-                "Характер, обращение и границы — только из карточки. "
-                "Код — блоком markdown. Стихи — с переводами строк.\n\n"
-                f"--- {cid} ---\n{card[:6000]}\n"
-            )
-            extra_sys = (self.system_prompt or "").strip()
-            if extra_sys and len(extra_sys) < 500:
-                system += "\n" + extra_sys + "\n"
+        if self._lean():
+            print("llm context: lean, только фраза пользователя", flush=True)
+            messages = [{"role": "user", "content": text}]
         else:
-            system = self.system_prompt or "Ты живой ассистент."
-        system = (system or "") + "\n" + assistant_mode.system_addendum(assistant_mode.get_mode(self.app))
-        ctx = self._context_block()
-        if ctx:
-            system += "\n" + ctx
+            if card:
+                system = (
+                    "Ты персонаж из карточки, не общий ассистент. "
+                    "Характер, обращение и границы — только из карточки. "
+                    "Код — блоком markdown. Стихи — с переводами строк.\n\n"
+                    f"--- {cid} ---\n{card[:6000]}\n"
+                )
+                extra_sys = (self.system_prompt or "").strip()
+                if extra_sys and len(extra_sys) < 500:
+                    system += "\n" + extra_sys + "\n"
+            else:
+                system = self.system_prompt or "Ты живой ассистент."
+            system = (system or "") + "\n" + assistant_mode.system_addendum(assistant_mode.get_mode(self.app))
+            ctx = self._context_block()
+            if ctx:
+                system += "\n" + ctx
 
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": system}]
-        tail = self._history_tail()
-        for m in self.history[-tail:]:
-            messages.append({"role": m["role"], "content": m["content"]})
+            messages = [{"role": "system", "content": system}]
+            tail = self._history_tail()
+            for m in self.history[-tail:]:
+                messages.append({"role": m["role"], "content": m["content"]})
 
-        for pl in plugs:
-            try:
-                messages = pl.on_before_llm(messages, self.app) or messages
-            except Exception as e:
-                print(f"[plugin {pl.id}] on_before_llm: {e}", flush=True)
+            for pl in plugs:
+                try:
+                    messages = pl.on_before_llm(messages, self.app) or messages
+                except Exception as e:
+                    print(f"[plugin {pl.id}] on_before_llm: {e}", flush=True)
 
         extra: Dict[str, Any] = {}
         if self.app.state.get("llm_max_tokens"):
@@ -738,7 +750,7 @@ class ChatEngine:
             extra["temperature"] = max(0.72, float(getattr(self.llm, "temperature", 0.75) or 0.75))
 
         parts: List[str] = []
-        model = getattr(self.app.config, "MODEL_NAME", None) or self.llm.model
+        model = getattr(self.llm, "model", None) or getattr(self.app.config, "MODEL_NAME", None)
         async for chunk in self.llm.chat_stream(messages, model=model, **extra):
             parts.append(chunk)
             yield chunk
@@ -754,7 +766,7 @@ class ChatEngine:
 
     async def generate_proactive(self, instruction: str) -> str:
         """Короткий пинг без записи пользовательской реплики в историю."""
-        if self._economy():
+        if self._economy() or self._lean():
             return ""
         cid = (
             self.app.get_active_character()

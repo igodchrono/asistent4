@@ -323,6 +323,10 @@ class PluginImpl(Plugin):
             for phrase in ("копировать адрес", "copy image address"):
                 self._right_click(user32)
                 time.sleep(0.22)
+                if not self._menu_open(user32):
+                    print("screen save: меню не открылось, не печатаю в окно", flush=True)
+                    self._tap(user32, 0x1B)
+                    break
                 self._clear_clipboard(user32)
                 self._type_text(user32, phrase)
                 time.sleep(0.08)
@@ -341,6 +345,9 @@ class PluginImpl(Plugin):
             for phrase in ("сохранить изображение", "save image"):
                 self._right_click(user32)
                 time.sleep(0.22)
+                if not self._menu_open(user32):
+                    self._tap(user32, 0x1B)
+                    break
                 self._type_text(user32, phrase)
                 time.sleep(0.08)
                 self._tap(user32, 0x0D)
@@ -448,30 +455,43 @@ class PluginImpl(Plugin):
         user32.keybd_event(0x11, 0, 2, 0)
 
     @staticmethod
+    def _menu_open(user32) -> bool:
+        popup = user32.GetWindow(user32.GetForegroundWindow(), 6)
+        if popup:
+            return True
+        return bool(user32.FindWindowW("#32768", None))
+
+    @staticmethod
     def _type_text(user32, text: str) -> None:
         import ctypes
-        ulong_ptr = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+        from ctypes import wintypes
 
         class KEYBDINPUT(ctypes.Structure):
             _fields_ = [
-                ("wVk", ctypes.c_ushort),
-                ("wScan", ctypes.c_ushort),
-                ("dwFlags", ctypes.c_ulong),
-                ("time", ctypes.c_ulong),
-                ("dwExtraInfo", ulong_ptr),
+                ("wVk", wintypes.WORD),
+                ("wScan", wintypes.WORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+            ]
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [
+                ("dx", wintypes.LONG),
+                ("dy", wintypes.LONG),
+                ("mouseData", wintypes.DWORD),
+                ("dwFlags", wintypes.DWORD),
+                ("time", wintypes.DWORD),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
             ]
 
         class INPUT(ctypes.Structure):
-            _fields_ = [("type", ctypes.c_ulong), ("ki", KEYBDINPUT)]
+            class _U(ctypes.Union):
+                _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT)]
+            _anonymous_ = ("u",)
+            _fields_ = [("type", wintypes.DWORD), ("u", _U)]
 
-        if ctypes.sizeof(ctypes.c_void_p) == 8 and ctypes.sizeof(INPUT) < 40:
-            class INPUT(ctypes.Structure):
-                _fields_ = [
-                    ("type", ctypes.c_ulong),
-                    ("ki", KEYBDINPUT),
-                    ("pad", ctypes.c_ulonglong),
-                ]
-
+        sent = 0
         for ch in text:
             down = INPUT()
             down.type = 1
@@ -481,9 +501,11 @@ class PluginImpl(Plugin):
             up.type = 1
             up.ki.wScan = ord(ch)
             up.ki.dwFlags = 0x0004 | 0x0002
-            user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(down))
+            sent += user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(down))
             user32.SendInput(1, ctypes.byref(up), ctypes.sizeof(up))
             time.sleep(0.02)
+        if sent < len(text):
+            print(f"screen save: клавиши не ушли {sent}/{len(text)}", flush=True)
 
     @staticmethod
     def _clear_clipboard(user32) -> None:

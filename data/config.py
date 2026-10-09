@@ -14,6 +14,7 @@ MAX_TOKENS = 1000
 LLM_TIMEOUT = 300
 LLM_CONNECT_TIMEOUT = 5
 LLM_ECONOMY_MODE = False  # True = генерация только по запросу пользователя, без авто-суммаризации и проактива
+LLM_CONTEXT_MODE = "full"  # full = карточка и история, lean = в модель только фраза пользователя
 
 # Сохранённые профили подключения к LLM
 SAVED_PROFILES = []

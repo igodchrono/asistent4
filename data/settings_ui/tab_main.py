@@ -95,6 +95,13 @@ class MainTabMixin:
         self.economy_check.setToolTip("Отключает авто-суммаризацию, проактивные сообщения и инициативные генерации. Ассистент отвечает только когда вы её спросили.")
         layout.addWidget(self.economy_check)
 
+        layout.addWidget(QtWidgets.QLabel("Контекст для LLM:"))
+        self.context_combo = QtWidgets.QComboBox()
+        self.context_combo.addItem("Полный — карточка, история, как сейчас", "full")
+        self.context_combo.addItem("Слабый — в модель только твоя фраза", "lean")
+        self.context_combo.setToolTip("Слабый экономит токены: без карточки, истории и служебного контекста.")
+        layout.addWidget(self.context_combo)
+
         layout.addWidget(QtWidgets.QLabel("System prompt (ядро):"))
         self.system_edit = QtWidgets.QPlainTextEdit()
         self.system_edit.setMaximumHeight(120)
@@ -278,6 +285,9 @@ class MainTabMixin:
             self.history_tail_spin.setValue(40)
         self.system_edit.setPlainText(str(getattr(config, "SYSTEM_PROMPT", "") or ""))
         self.economy_check.setChecked(bool(getattr(config, "LLM_ECONOMY_MODE", False)))
+        ctx_mode = str(getattr(config, "LLM_CONTEXT_MODE", "full") or "full")
+        ctx_idx = self.context_combo.findData(ctx_mode)
+        self.context_combo.setCurrentIndex(ctx_idx if ctx_idx >= 0 else 0)
         self._rebuild_profile_combo()
         QtCore.QTimer.singleShot(300, self.load_models_list)
 
@@ -300,5 +310,6 @@ class MainTabMixin:
             "HISTORY_TAIL": int(self.history_tail_spin.value()),
             "SYSTEM_PROMPT": self.system_edit.toPlainText(),
             "LLM_ECONOMY_MODE": self.economy_check.isChecked(),
+            "LLM_CONTEXT_MODE": str(self.context_combo.currentData() or "full"),
             "SAVED_PROFILES": list(getattr(config, "SAVED_PROFILES", []) or []),
         }

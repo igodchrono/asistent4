@@ -500,7 +500,8 @@ class PluginImpl(Plugin):
 
     def _refresh_list_ui_now(self) -> None:
         lst = self._ui.get("list")
-        if lst is None:
+        if lst is None or not self._widget_alive(lst):
+            self._ui.pop("list", None)
             return
         try:
             from PyQt5 import QtCore, QtWidgets
@@ -526,6 +527,18 @@ class PluginImpl(Plugin):
             row = QtWidgets.QListWidgetItem(f"#{mid}  {content}")
             row.setData(QtCore.Qt.UserRole, mid)
             lst.addItem(row)
+
+    @staticmethod
+    def _widget_alive(widget) -> bool:
+        try:
+            from PyQt5 import sip
+            return not sip.isdeleted(widget)
+        except Exception:
+            try:
+                widget.objectName()
+                return True
+            except RuntimeError:
+                return False
 
 
 def register():
