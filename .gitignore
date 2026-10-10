@@ -48,6 +48,7 @@ data/personas/characters/qa-open/
 data/personas/characters/qa-lock/
 data/personas/characters/тест-макс/
 data/personas/characters/тест-лок/
+D:\asistent\asistent4\data\generated
 .vs
 
 # Модели и чекпоинты — HuggingFace / релизы, не git
@@ -79,3 +80,5 @@ Desktop.ini
 *.swp
 data/cache/screen_last.jpg
 data/cache/screen_last.txt
+/data/generated
+/data/generated
