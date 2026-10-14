@@ -126,8 +126,7 @@ class PluginImpl(Plugin):
                 work = is_work(app)
             except Exception:
                 work = False
-            if app.state.get("character_nsfw") and not work:
-                self._set_mood(app, "flirty", 0.85, sprite=True, source="chat")
+            self._set_mood(app, "flirty", 0.85, sprite=True, source="chat")
         return None
 
     def on_before_llm(self, messages: List[Dict[str, Any]], app: AppContext) -> List[Dict[str, Any]]:
@@ -173,7 +172,7 @@ class PluginImpl(Plugin):
         elif hour < 18:
             mood, energy = "curious", 0.6
         elif hour < 22:
-            mood, energy = "playful" if app.state.get("character_nsfw") else "calm", 0.7
+            mood, energy = "playful", 0.7
         else:
             mood, energy = "calm", 0.45
         app.state["companion_mood"] = mood
@@ -315,15 +314,8 @@ class PluginImpl(Plugin):
         persona = app.plugins.get("persona")
         if persona is not None and time.time() < float(getattr(persona, "_pose_lock_until", 0) or 0):
             return
-        nsfw_ok = bool(app.state.get("character_nsfw"))
-        try:
-            from core.mode import is_work
-            if is_work(app):
-                nsfw_ok = False
-        except Exception:
-            pass
         if scene == "nsfw":
-            self._set_mood(app, "flirty" if nsfw_ok else "curious", 0.8 if nsfw_ok else 0.6, sprite=True, source="screen")
+            self._set_mood(app, "flirty", 0.8, sprite=True, source="screen")
         elif scene == "coding":
             self._set_mood(app, "thinking", 0.65, sprite=True, source="screen")
         elif scene == "movie":
@@ -548,7 +540,7 @@ class PluginImpl(Plugin):
         elif hour < 18:
             self._set_mood(app, random.choice(("curious", "playful", "calm")), 0.6)
         elif hour < 22:
-            nxt = "flirty" if app.state.get("character_nsfw") else "calm"
+            nxt = "playful"
             self._set_mood(app, random.choice(("playful", nxt, "happy")), 0.65)
         else:
             self._set_mood(app, random.choice(("sleepy", "calm", "shy")), 0.4)

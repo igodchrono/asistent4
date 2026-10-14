@@ -1,0 +1,28 @@
+draft:
+  steps: 15
+  cfg_scale: 5.0
+  resolution: [512, 512]
+  sampler: "Euler a"
+
+standard:
+  steps: 25
+  cfg_scale: 7.0
+  resolution: [768, 768]
+  sampler: "DPM++ 2M Karras"
+
+high:
+  steps: 40
+  cfg_scale: 7.5
+  resolution: [1024, 1024]
+  sampler: "DPM++ SDE Karras"
+  hires_fix: true
+  hires_scale: 1.5
+
+ultra:
+  steps: 60
+  cfg_scale: 8.0
+  resolution: [1536, 1536]
+  sampler: "DPM++ SDE Karras"
+  hires_fix: true
+  hires_scale: 2.0
+  refiner: true

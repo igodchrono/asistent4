@@ -17,6 +17,11 @@ from urllib.request import Request
 from urllib.error import HTTPError, URLError
 
 from core.plugin_api import AppContext, Plugin, SettingField
+from core.query_parser import ParsedQuery, QueryParser
+from core.search_settings import load as load_search_settings
+
+from .description import describe_html
+from .smart_search import SmartSearch, cache_get, cache_put, log_perf
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -55,7 +60,7 @@ class _TextExtract(HTMLParser):
 class PluginImpl(Plugin):
     id = "browser_search"
     name = "Браузер и поиск"
-    version = "4.2.0"
+    version = "4.3.0"
     description = "Парсер выдачи + скачивание картинок/текста/файлов в чат"
     settings_tab = "own"
     settings_tab_title = "Браузер"
@@ -78,7 +83,7 @@ class PluginImpl(Plugin):
     ]
 
     def on_load(self, app: AppContext) -> None:
-        print("🌐 browser_search 4.2: parse + download to chat", flush=True)
+        print("🌐 browser_search 4.3: one best result, titled links", flush=True)
 
     def register_tools(self, app: AppContext) -> None:
         app.tools["web_search"] = self.tool_web_search
@@ -132,43 +137,55 @@ class PluginImpl(Plugin):
         app.state["last_search_url"] = self._url(q, mode, app)
         self._emotion(app, q)
 
+        started = time.perf_counter()
+        parsed = self._parsed_query(q, mode, kwargs)
+        cfg = load_search_settings()
+        search_cfg = cfg.get("search") or {}
+        cache_dir = Path(__file__).resolve().parents[2] / str(search_cfg.get("cache_dir") or "cache/search")
+        cache_key = f"{mode}|{parsed.quantity}|{parsed.subject}|{parsed.filters}"
         results: List[Dict[str, Any]] = []
+        from_cache = False
         if bool(app.get_plugin_setting(self.id, "parse_results", True)):
-            n = int(app.get_plugin_setting(self.id, "max_results", 8) or 8)
-            try:
-                if mode == "images":
-                    results = self._parse_images(q, n)
-                elif mode == "video":
-                    results = [{"title": q, "url": self._url(q, "video", app), "kind": "video"}]
-                else:
-                    results = self._parse_web(q, n)
-            except Exception as e:
-                print(f"browser_search: parse fail {e}", flush=True)
-        app.state["last_search_results"] = results
-        print(f"browser_search: parsed n={len(results)} mode={mode} q={q!r}", flush=True)
-
-        lines = [f"Нашла по запросу «{q}» ({mode})."]
-        if results:
-            lines.append("Скажи «скачай 1» / «открой её» / «текст со 2».")
-            for i, r in enumerate(results[:8], 1):
-                title = (r.get("title") or r.get("url") or "")[:90]
-                lines.append(f"{i}. {title}")
-            extract0 = str((results[0] or {}).get("extract") or "")
-            if extract0:
-                lines.append("")
-                lines.append(extract0[:900])
-        else:
-            lines.append("Вкладка поиска открыта. Парсер ничего не вытащил — дай прямую ссылку.")
-
-        if (
-            mode == "images"
-            and results
-            and bool(app.get_plugin_setting(self.id, "auto_download_first", True))
-        ):
+            cached = cache_get(cache_dir, cache_key, float(search_cfg.get("cache_ttl_hours") or 24))
+            if cached:
+                results = cached
+                from_cache = True
+            else:
+                n = int(search_cfg.get("max_candidates_per_engine") or 10)
+                try:
+                    if mode == "images":
+                        results = self._parse_images(q, n)
+                    elif mode == "video":
+                        results = [{"title": q, "url": self._url(q, "video", app), "kind": "video", "description": q}]
+                    else:
+                        results = self._parse_web(q, n)
+                except Exception as e:
+                    print(f"browser_search: parse fail {e}", flush=True)
+                smart = SmartSearch(cfg)
+                results = smart.rank(results, parsed)
+                if results:
+                    cache_put(cache_dir, cache_key, results)
+        smart = SmartSearch(cfg)
+        picked = smart.pick(results, parsed)
+        if not from_cache and mode != "images":
+            picked = self._enrich_descriptions(picked)
+        app.state["last_search_results"] = picked or results
+        print(
+            f"browser_search: parsed n={len(results)} picked={len(picked)} mode={mode} q={q!r} cache={from_cache}",
+            flush=True,
+        )
+        lines = smart.format_answer(picked, parsed)
+        into_chat = kwargs.get("into_chat", None)
+        if isinstance(into_chat, str):
+            into_chat = into_chat.strip().lower() in ("1", "true", "yes", "да")
+        if into_chat is None:
+            into_chat = bool(parsed.wants_download)
+        if mode == "images" and picked and into_chat:
             extra = self.tool_download_image(app, index=1)
-            lines.append("")
-            lines.append(extra)
-        return "\n".join(lines)
+            lines = lines + "\n\n" + extra
+        elapsed = time.perf_counter() - started
+        log_perf(Path(__file__).resolve().parents[2], f"q={q!r} mode={mode} n={len(results)} {elapsed:.2f}s cache={from_cache}")
+        return lines
 
     def tool_search_similar(self, app: AppContext, kind: str = "generic", **kwargs) -> str:
         q = self._similar_query(app, kind) or str(kwargs.get("query") or "").strip()
@@ -264,6 +281,9 @@ class PluginImpl(Plugin):
             return f"Не скачать картинку: {e}"
         if len(data) < 80:
             return "Файл слишком маленький — это не картинка."
+        limit_mb = int((load_search_settings().get("search") or {}).get("max_file_size_mb") or 20)
+        if len(data) > limit_mb * 1024 * 1024:
+            return f"Картинка больше {limit_mb} МБ, не сохраняю."
         ext = self._ext_from(data, ctype, final)
         if ext not in _IMG_EXT:
             return f"По ссылке не картинка ({ctype or ext}). Дай прямую ссылку на jpg/png."
@@ -358,10 +378,12 @@ class PluginImpl(Plugin):
         href = links[0]
         extract = extract or self._wiki_summary(title)
         return {
-            "title": f"{title} — {extract}"[:160],
+            "title": str(title or query),
             "url": href,
             "kind": "web",
             "extract": extract,
+            "description": extract,
+            "source": "wikipedia.org",
         }
 
     def _wiki_summary(self, title: str) -> str:
@@ -375,23 +397,66 @@ class PluginImpl(Plugin):
             return ""
 
     def _parse_images(self, query: str, n: int) -> List[Dict[str, Any]]:
-        merged: List[Dict[str, Any]] = []
-        seen = set()
-        for fn in (self._images_openverse, self._images_wikimedia, self._images_bing, self._images_ddg):
-            try:
-                hits = fn(query, n)
-            except Exception as e:
-                print(f"browser_search: {fn.__name__} {e}", flush=True)
-                hits = []
-            for h in hits:
-                key = str(h.get("image") or h.get("url") or "")
-                if not key or key in seen:
-                    continue
-                seen.add(key)
-                merged.append(h)
-                if len(merged) >= n:
-                    return merged
-        return merged
+        each = max(3, min(int(n or 8), 10))
+        engines = (
+            self._images_openverse,
+            self._images_wikimedia,
+            self._images_bing,
+            self._images_ddg,
+        )
+        calls = [lambda fn=fn: fn(query, each) for fn in engines]
+        return SmartSearch().collect(calls)
+
+    def _parsed_query(self, q: str, mode: str, kwargs: Dict[str, Any]) -> ParsedQuery:
+        raw = str(kwargs.get("text") or q or "")
+        parsed = QueryParser().parse(raw)
+        subject = str(kwargs.get("subject") or q or parsed.subject or "").strip()
+        if subject:
+            parsed.subject = subject
+        qty = str(kwargs.get("quantity") or "")
+        if qty in ("one", "few", "many"):
+            parsed.quantity = qty
+        mods = kwargs.get("modifiers") or []
+        if isinstance(mods, list) and mods:
+            parsed.modifiers = [str(x) for x in mods]
+        filters = kwargs.get("filters")
+        if isinstance(filters, dict):
+            parsed.filters.update({str(k): str(v) for k, v in filters.items()})
+        if kwargs.get("wants_download") is not None:
+            parsed.wants_download = bool(kwargs.get("wants_download"))
+        if mode == "images":
+            parsed.content_type = "image"
+            parsed.intent = "find_image"
+        elif mode == "video":
+            parsed.content_type = "video"
+            parsed.intent = "find_link"
+        elif kwargs.get("content_type"):
+            parsed.content_type = str(kwargs.get("content_type"))
+        return parsed
+
+    def _enrich_descriptions(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        out = []
+        fetched = 0
+        for item in items:
+            row = dict(item)
+            if row.get("extract") and not row.get("description"):
+                row["description"] = row["extract"]
+            if row.get("description") or row.get("kind") == "image" or fetched >= 3:
+                out.append(row)
+                continue
+            url = str(row.get("url") or "")
+            if not url.startswith("http"):
+                out.append(row)
+                continue
+            fetched += 1
+            raw, ctype, _ = self._http_get_safe(url, timeout=4)
+            head = raw[:400].lower()
+            if raw and (b"<html" in head or b"<!doctype" in head or "html" in (ctype or "").lower()):
+                desc = describe_html(raw.decode("utf-8", "replace"))
+                if desc:
+                    row["description"] = desc[:400]
+            out.append(row)
+        return out
 
     def _images_openverse(self, query: str, n: int) -> List[Dict[str, Any]]:
         url = (

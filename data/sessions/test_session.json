@@ -1,0 +1,20 @@
+{
+  "turns": [
+    {
+      "role": "user",
+      "text": "привет",
+      "timestamp": 1791923637.3951962,
+      "entities": {},
+      "image_refs": []
+    },
+    {
+      "role": "assistant",
+      "text": "здравствуй",
+      "timestamp": 1791923637.396188,
+      "entities": {},
+      "image_refs": []
+    }
+  ],
+  "entities": {},
+  "topic": ""
+}

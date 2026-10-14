@@ -54,10 +54,7 @@ _MOOD_FAMILIES = {
     "mischievous": ("mischievous", "sly", "teasing", "playful"),
 }
 
-_NSFW_FAMILIES = {
-    "undress", "lingerie", "bath", "bed", "naked", "seductive",
-    "dominant", "submissive",
-}
+
 
 _INTENT_ANIM = {
     "web_search": "searching",
@@ -159,24 +156,13 @@ class PluginImpl(Plugin):
         self.win = None
         self.app = None
         self._keywords: List[dict] = []
-        self._forbidden: set = set()
-        self._forbid_fallback = "pouting"
-        self._nsfw = True
         self._recent: List[str] = []
         self._pose_lock_until = 0.0
         self._cycle_i = 0
         self._idle_timer = None
 
-    def _nsfw_ok(self) -> bool:
-        if not self._nsfw:
-            return False
-        try:
-            from core.mode import is_work
-            if self.app is not None and is_work(self.app):
-                return False
-        except Exception:
-            pass
-        return True
+    def _family_pool(self, family: str, names: Set[str], mood: str = "") -> List[str]:
+        family = family_of(family)
 
     def on_load(self, app: AppContext) -> None:
         self.app = app
@@ -342,7 +328,7 @@ class PluginImpl(Plugin):
         if not exact and shown and family_of(shown) == family_of(raw):
             return
         names = set(self._live_names())
-        if exact and raw in names and raw not in self._forbidden:
+        if exact and raw in names:
             name = raw
         else:
             name = self._resolve(raw)
@@ -361,7 +347,7 @@ class PluginImpl(Plugin):
 
     def _live_names(self) -> List[str]:
         if self.win and hasattr(self.win, "animation_names"):
-            return [n for n in self.win.animation_names() if n not in self._forbidden]
+            return [n for n in self.win.animation_names()]
         return []
 
     def _remember_shown(self, name: str) -> None:
@@ -389,8 +375,6 @@ class PluginImpl(Plugin):
         family = family_of(family)
         if family in _FALLBACK and family not in names:
             family = _FALLBACK[family]
-        if not self._nsfw_ok() and family in _NSFW_FAMILIES:
-            family = self._forbid_fallback
         pool = []
         for n in names:
             if n == family or n.startswith(family + "_"):
@@ -404,28 +388,25 @@ class PluginImpl(Plugin):
                 pool.append(want2)
         if not pool and family in names:
             pool = [family]
-        return [p for p in pool if p not in self._forbidden]
+        return pool
 
     def _resolve(self, raw: str) -> str:
         raw = (raw or "idle").lower().strip()
         names = set(self._live_names())
         if not names and self.win:
             names = set(self.win.animation_names())
-        if raw in self._forbidden:
-            raw = self._forbid_fallback
-        if raw in names and raw not in self._forbidden:
+        if raw in names:
             return raw
         pool = self._family_pool(raw, names, "")
         if not pool:
             pool = self._family_pool(_FALLBACK.get(raw, raw), names, "")
         if not pool:
             for alt in list(names):
-                if alt.startswith(family_of(raw) + "_") or alt.endswith("_" + family_of(raw)):
-                    if alt not in self._forbidden:
+                    if alt.startswith(family_of(raw) + "_") or alt.endswith("_" + family_of(raw)):
                         pool.append(alt)
         if pool:
             return sorted(pool)[0]
-        for c in (self._forbid_fallback, "idle", "neutral", "happy"):
+        for c in ("idle", "neutral", "happy"):
             if c in names:
                 return c
         return next(iter(sorted(names)), "")
@@ -435,13 +416,9 @@ class PluginImpl(Plugin):
             keys = item.get("keys") or []
             anim = str(item.get("anim") or "")
             if anim and any(key_hit(low, k) for k in keys):
-                if not self._nsfw_ok() and family_of(anim) in _NSFW_FAMILIES:
-                    return self._forbid_fallback
-                return anim
+                    return anim
         for keys, anim in _POSE_KEYS:
             if any(key_hit(low, k) for k in keys):
-                if not self._nsfw_ok() and anim in _NSFW_FAMILIES:
-                    return self._forbid_fallback
                 return anim
         return ""
 
@@ -567,16 +544,13 @@ class PluginImpl(Plugin):
             return
         n = self.win.load_from_character_dir(cdir)
         names = self.win.animation_names()
-        print(f"persona: {cdir.name} files≈{n} unique={len(names)} forbidden={len(self._forbidden)}", flush=True)
+        print(f"persona: {cdir.name} files≈{n} unique={len(names)}", flush=True)
         start = "idle" if self.win.has("idle") else ("neutral" if self.win.has("neutral") else (names[0] if names else "idle"))
         self.win.show_static(start)
         self.win.show()
 
     def _load_maps(self) -> None:
         self._keywords = []
-        self._forbidden = set()
-        self._forbid_fallback = "pouting"
-        self._nsfw = True
         if self.app is None:
             return
         cdir = self.app.get_character_dir()
@@ -612,34 +586,9 @@ class PluginImpl(Plugin):
             card = read_character_card(str(self.app.get_active_character() or "")) or ""
         except Exception:
             card = ""
-        self._nsfw = True
-        for raw in (card or "").splitlines()[:20]:
-            line = raw.strip().lower()
-            if line.startswith("nsfw:"):
-                self._nsfw = line.split(":", 1)[-1].strip() in ("true", "yes", "1", "on", "да")
-                break
-        grab = False
-        for line in (card or "").splitlines():
-            s = line.strip()
-            low = s.lower()
-            if low.startswith("## анимации запрещен"):
-                grab = True
-                continue
-            if low.startswith("## "):
-                grab = False
-            if grab and s and not s.startswith("#"):
-                for part in s.replace(";", ",").split(","):
-                    n = part.strip().lower()
-                    if n:
-                        self._forbidden.add(n)
-        nxt = False
         for line in (card or "").splitlines():
             s = line.strip()
             if s.lower().startswith("## анимация вместо"):
-                nxt = True
-                continue
-            if nxt and s and not s.startswith("#"):
-                self._forbid_fallback = s.split()[0].strip(",.").lower()
                 break
 
 

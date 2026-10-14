@@ -9,8 +9,9 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from .llm_manager import LLMManager
 from .plugin_api import AppContext, HookResult
-from .intents import classify as rule_classify, sanitize_intent, strip_search_fluff
+from .intents import classify as rule_classify, sanitize_intent, strip_search_fluff, wants_image_in_chat
 from . import mode as assistant_mode
+from .conversation_context import ConversationContext, Turn, build_context_block
 import config
 
 # один поток: tools не блокируют GUI, state не гоняется параллельно
@@ -30,12 +31,30 @@ intent:
 - fetch_url — скачать конкретную ссылку (картинка/текст/pdf/json) в чат. args: {"url":"https://..."}
 - open_last_search — то же что download_image (картинки) или fetch_page (сайты), НЕ открывать поиск заново
 
+- pick_from_screen — умный выбор картинки с экрана по предпочтениям пользователя.
+  Триггеры: «посмотри на экран и выбери», «выбери с экрана», «что там интересного»,
+  «какая из них лучше», «вырежи и покажи», «найди на экране», «выбери не как в прошлый раз»,
+  «покажи что-то с экрана». args: {"request":"<запрос>"}
+- pick_similar_to_past — выбрать похожее на прошлые предпочтения с экрана.
+  Триггеры: «покажи ещё похожее», «ещё такое», «в том же стиле», «мне нравится что-то похожее».
+  args: {"n":3}
+
 - imggen — СОЗДАТЬ новую картинку (ComfyUI), не искать в гугле.
   Триггеры: нарисуй, нарисовать, сгенерируй, сгенерировать, создай картинку, сделай арт, изобрази, draw, generate.
-  НЕ web_search. args: {"prompt":"<сцена>","negative":"","size":"square|portrait|landscape"}
+  НЕ web_search. args: {"prompt":"<сцена>","negative":"","size":"square|portrait|landscape",
+    "style":"anime|photorealistic|watercolor|oil_painting|concept_art|cyberpunk",
+    "quality":"draft|standard|high|ultra","count":1..6,
+    "seed":12345678 (повтори с тем же seed / сделай вариацию)}
+  * «нарисуй кота в высоком качестве» → style/quality hints
+  * «нарисуй кота в стиле аниме» → style:"anime", cfg 7.0
+  * «покажи 3 варианта кота» → count:3
+  * «повтори с тем же seed» → seed из истории генераций
+  * «сделай вариацию» → тот же seed + мутация промта
 - imggen_edit — править уже загруженную/сгенерированную картинку.
   Триггеры: переделай, измени картинку, дорисуй, перекрась, добавь на картинке, в стиле.
-  args: {"prompt":"...","source":"last|uploaded|generated"}
+  И правки прошлой генерации: «слишком темно», «добавь деталей», «сделай ярче», «убери фон»,
+  «сделай более аниме». args: {"prompt":"...","source":"last|uploaded|generated",
+    "refine_feedback":"<текст правки>","style":"...","quality":"..."}
 
 - text_edit — править загруженный текст (txt/md/docx/pdf).
   Триггеры: перепиши, отредактируй, сократи, исправь ошибки, переведи, измени стиль, в официальном стиле.
@@ -146,6 +165,11 @@ class ChatEngine:
         app.state.setdefault("context", {})
         app.state["engine"] = self
         app.engine = self
+        self.conversation_context = ConversationContext(
+            max_turns=getattr(app.config, "HISTORY_TAIL", 20),
+            max_tokens=4000,
+            session_dir="data/sessions",
+        )
 
     def _ctx(self) -> Dict[str, Any]:
         st = self.app.state
@@ -165,7 +189,6 @@ class ChatEngine:
                 if hasattr(self.app, "get_active_character")
                 else getattr(self.app.config, "ACTIVE_CHARACTER", "")
             ),
-            "nsfw": bool(st.get("character_nsfw")),
             "emotion": str(st.get("companion_mood") or st.get("emotion") or "neutral"),
             "mode": assistant_mode.get_mode(self.app),
         }
@@ -200,6 +223,9 @@ class ChatEngine:
             ruled = sanitize_intent(ruled)
             print(f"intent rules: {ruled.get('intent')} args={ruled.get('args')}", flush=True)
             return ruled
+        if self._lean():
+            print("intent: lean, без классификатора", flush=True)
+            return {"intent": "chat", "args": {}, "speak": ""}
         ctx = self._context_block()
         messages = [
             {"role": "system", "content": INTENT_SCHEMA + "\n\n" + ctx},
@@ -302,6 +328,31 @@ class ChatEngine:
         speak = str(data.get("speak") or "").strip()
         return {"intent": intent, "args": args, "speak": speak}
 
+    @staticmethod
+    def _merge_generation_hints(args: Dict[str, Any]) -> None:
+        """БЛОК 10: style/quality/refine_feedback → в текст промта для генератора.
+
+        Генератор (phone_media) сам строит финальный промт через LLM.
+        Хинты передаём текстом, чтобы они попали в сцену не ломая граф.
+        """
+        prompt = str(args.get("prompt") or "").strip()
+        hints: List[str] = []
+        style = str(args.get("style") or "").strip()
+        quality = str(args.get("quality") or "").strip()
+        refine = str(args.get("refine_feedback") or "").strip()
+        if style and style.lower() not in prompt.lower():
+            hints.append(f"стиль: {style}")
+        if quality and quality.lower() not in prompt.lower():
+            hints.append(f"качество: {quality}")
+        if refine:
+            hints.append(refine)
+        if hints:
+            suffix = ", ".join(hints)
+            if prompt:
+                args["prompt"] = f"{prompt} ({suffix})"
+            else:
+                args["prompt"] = suffix
+
     def _run_tool(self, intent: str, args: Dict[str, Any]) -> Optional[str]:
         tools = self.app.tools or {}
         args = dict(args or {})
@@ -310,6 +361,8 @@ class ChatEngine:
         if intent in ("imggen", "imggen_edit"):
             if not args.get("prompt"):
                 args["prompt"] = args.get("text") or args.get("query") or ""
+            # БЛОК 10: style/quality-хинты и refine_feedback → в промт для генератора
+            self._merge_generation_hints(args)
         if intent == "text_edit" and not args.get("instruction"):
             args["instruction"] = args.get("text") or args.get("query") or ""
         if intent in ("save_file", "send_file"):
@@ -349,6 +402,8 @@ class ChatEngine:
             "pc_recycle": "pc_recycle",
             "pc_empty_recycle": "pc_empty_recycle",
             "deep_think": "deep_think",
+            "pick_from_screen": "pick_from_screen",
+            "pick_similar_to_past": "pick_similar_to_past",
             "imggen": "generate_image",
             "imggen_edit": "generate_image",
             "text_edit": "edit_uploaded",
@@ -420,7 +475,7 @@ class ChatEngine:
             print(f"memory record: {e}", flush=True)
 
     def _schedule_summary(self) -> None:
-        if self._economy():
+        if self._economy() or self._lean():
             return
         mem = self._memory_plugin()
         if mem is None or not hasattr(mem, "maybe_summarize"):
@@ -436,6 +491,11 @@ class ChatEngine:
     def _economy() -> bool:
         """True = экономный режим: генерация только по запросу пользователя."""
         return bool(getattr(config, "LLM_ECONOMY_MODE", False))
+
+    @staticmethod
+    def _lean() -> bool:
+        """True = в модель уходит только фраза пользователя, без карточки и истории."""
+        return str(getattr(config, "LLM_CONTEXT_MODE", "full") or "full") == "lean"
 
     async def _refine_search_args(self, user_text: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Вытащить нормальный поисковый запрос из фразы пользователя."""
@@ -463,7 +523,7 @@ class ChatEngine:
             or any(w in q.lower() for w in ("можешь", "пожалуйста", "хочу", "давай", "мне нужно"))
             or q.lower() == (user_text or "").lower()
         )
-        if need_llm:
+        if need_llm and not self._lean():
             try:
                 prompt = (
                     "Преврати фразу пользователя в короткий поисковый запрос для Google (3–8 слов). "
@@ -486,6 +546,11 @@ class ChatEngine:
 
         args["query"] = q
         args["mode"] = mode
+        if mode == "images":
+            asked = wants_image_in_chat(low) or bool(args.get("wants_download")) or bool(args.get("into_chat"))
+            args["into_chat"] = asked
+        else:
+            args.pop("into_chat", None)
         return args
 
     def _history_tail(self) -> int:
@@ -510,7 +575,7 @@ class ChatEngine:
     async def _in_character_line(self, tool_text: str, intent: str) -> str:
         """Короткая реплика только если это не готовый поиск, файл или картинка."""
         raw = (tool_text or "").strip()
-        if len(raw) < 12:
+        if len(raw) < 12 or self._lean():
             return raw
         factual = {
             "web_search", "download_image", "fetch_page", "fetch_url",
@@ -563,6 +628,16 @@ class ChatEngine:
         text = (text or "").strip()
         if not text:
             return
+
+        # 1. Разрешить отсылки через контекст диалога
+        resolved = self.conversation_context.resolve_reference(text)
+        if resolved != text:
+            print(f"[context] resolve: {text!r} → {resolved!r}", flush=True)
+        text = resolved
+
+        # 2. Добавить ход пользователя в контекст диалога
+        self.conversation_context.add(Turn("user", text))
+
         self.history.append({"role": "user", "content": text})
         self._remember("user", text)
         self._trim_history()
@@ -697,33 +772,41 @@ class ChatEngine:
         except Exception:
             card = ""
 
-        if card:
-            system = (
-                "Ты персонаж из карточки, не общий ассистент. "
-                "Характер, обращение и границы — только из карточки. "
-                "Код — блоком markdown. Стихи — с переводами строк.\n\n"
-                f"--- {cid} ---\n{card[:6000]}\n"
-            )
-            extra_sys = (self.system_prompt or "").strip()
-            if extra_sys and len(extra_sys) < 500:
-                system += "\n" + extra_sys + "\n"
+        if self._lean():
+            print("llm context: lean, только фраза пользователя", flush=True)
+            messages = [{"role": "user", "content": text}]
         else:
-            system = self.system_prompt or "Ты живой ассистент."
-        system = (system or "") + "\n" + assistant_mode.system_addendum(assistant_mode.get_mode(self.app))
-        ctx = self._context_block()
-        if ctx:
-            system += "\n" + ctx
+            if card:
+                system = (
+                    "Ты персонаж из карточки, не общий ассистент. "
+                    "Характер, обращение и границы — только из карточки. "
+                    "Код — блоком markdown. Стихи — с переводами строк.\n\n"
+                    f"--- {cid} ---\n{card[:6000]}\n"
+                )
+                extra_sys = (self.system_prompt or "").strip()
+                if extra_sys and len(extra_sys) < 500:
+                    system += "\n" + extra_sys + "\n"
+            else:
+                system = self.system_prompt or "Ты живой ассистент."
+            system = (system or "") + "\n" + assistant_mode.system_addendum(assistant_mode.get_mode(self.app))
+            ctx = self._context_block()
+            if ctx:
+                system += "\n" + ctx
+            # Блок контекста диалога (тема, сущности, разрешение отсылок)
+            dialog_ctx = build_context_block(self.conversation_context)
+            if dialog_ctx:
+                system += "\n" + dialog_ctx
 
-        messages: List[Dict[str, Any]] = [{"role": "system", "content": system}]
-        tail = self._history_tail()
-        for m in self.history[-tail:]:
-            messages.append({"role": m["role"], "content": m["content"]})
+            messages = [{"role": "system", "content": system}]
+            tail = self._history_tail()
+            for m in self.history[-tail:]:
+                messages.append({"role": m["role"], "content": m["content"]})
 
-        for pl in plugs:
-            try:
-                messages = pl.on_before_llm(messages, self.app) or messages
-            except Exception as e:
-                print(f"[plugin {pl.id}] on_before_llm: {e}", flush=True)
+            for pl in plugs:
+                try:
+                    messages = pl.on_before_llm(messages, self.app) or messages
+                except Exception as e:
+                    print(f"[plugin {pl.id}] on_before_llm: {e}", flush=True)
 
         extra: Dict[str, Any] = {}
         if self.app.state.get("llm_max_tokens"):
@@ -738,7 +821,7 @@ class ChatEngine:
             extra["temperature"] = max(0.72, float(getattr(self.llm, "temperature", 0.75) or 0.75))
 
         parts: List[str] = []
-        model = getattr(self.app.config, "MODEL_NAME", None) or self.llm.model
+        model = getattr(self.llm, "model", None) or getattr(self.app.config, "MODEL_NAME", None)
         async for chunk in self.llm.chat_stream(messages, model=model, **extra):
             parts.append(chunk)
             yield chunk
@@ -751,10 +834,12 @@ class ChatEngine:
         self._remember("assistant", reply)
         self._trim_history()
         self._schedule_summary()
+        # Сохранить ответ ассистента в контекст диалога
+        self.conversation_context.add(Turn("assistant", reply))
 
     async def generate_proactive(self, instruction: str) -> str:
         """Короткий пинг без записи пользовательской реплики в историю."""
-        if self._economy():
+        if self._economy() or self._lean():
             return ""
         cid = (
             self.app.get_active_character()

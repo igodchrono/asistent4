@@ -1,0 +1,11 @@
+landscape:
+  template: "{quality}, {style}, wide landscape of {scene}, {lighting}, {weather}, {time_of_day}, {background}, {details}"
+  defaults:
+    quality: "masterpiece, best quality, ultra-detailed, 8k"
+    lighting: "golden hour, dramatic sky"
+    details: "intricate foliage, atmospheric perspective"
+  slots:
+    scene: required
+    weather: optional
+    time_of_day: optional
+    background: optional

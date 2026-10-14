@@ -56,12 +56,24 @@ def _strip_anim(text: str) -> str:
     return _keep_lines(_ANIM_RE.sub("", text or ""))
 
 
+_MD_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+_RAW_URL_RE = re.compile(r"https?://[^\s<>\"']+")
+
+
 def _html_line(line: str) -> str:
+    slots: list[tuple[str, str]] = []
+
+    def _stash(label: str, url: str) -> str:
+        slots.append((label, url))
+        return f"@@L{len(slots) - 1}@@"
+
+    work = _MD_LINK_RE.sub(lambda m: _stash(m.group(1), m.group(2)), line)
+    work = _RAW_URL_RE.sub(lambda m: _stash(m.group(0).rstrip(".,);]"), m.group(0).rstrip(".,);]")), work)
     i = 0
-    while i < len(line) and line[i] in " \t":
+    while i < len(work) and work[i] in " \t":
         i += 1
-    lead = line[:i].replace("\t", "    ").replace(" ", "&nbsp;")
-    rest = html.escape(line[i:])
+    lead = work[:i].replace("\t", "    ").replace(" ", "&nbsp;")
+    rest = html.escape(work[i:])
 
     def _code(m: re.Match) -> str:
         return (
@@ -72,7 +84,14 @@ def _html_line(line: str) -> str:
     rest = _INLINE_RE.sub(_code, rest)
     rest = _BOLD_RE.sub(r"<b>\1</b>", rest)
     rest = _ITALIC_RE.sub(r"<i>\1</i>", rest)
-    return lead + rest
+
+    def _put(m: re.Match) -> str:
+        label, url = slots[int(m.group(1))]
+        return (
+            f'<a href="{html.escape(url, quote=True)}" style="color:#9cf;">{html.escape(label)}</a>'
+        )
+
+    return lead + re.sub(r"@@L(\d+)@@", _put, rest)
 
 
 def _html_prose(text: str) -> str:
@@ -398,6 +417,9 @@ class ChatWindow(QtWidgets.QMainWindow):
                     except Exception as e:
                         self._append_sys(f"Не сохранилось: {e}")
                 return
+        if url.scheme() in ("http", "https"):
+            QtGui.QDesktopServices.openUrl(url)
+            return
         path = Path(url.toLocalFile() or "")
         if not path.exists():
             s = url.toString()

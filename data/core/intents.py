@@ -36,8 +36,20 @@ _GEN_VERBS = (
     "generate a picture", "create an image",
 )
 _EDIT_IMG = (
-    "переделай", "дорисуй", "перекрась", "измени картин", "добавь на картин",
-    "поправь картин", "отредактируй картин",
+    "переделай картин", "переделай фото", "переделай изображ",
+    "дорисуй", "перекрась", "измени картин", "измени фото", "измени изображ",
+    "добавь на картин", "поправь картин", "поправь фото", "отредактируй картин",
+    "отредактируй фото",
+)
+_REF_IMG = (
+    "по референс", "с референс", "используй референс", "это референс",
+    "по фото", "по этому фото", "это фото", "по этой картин", "по картинке",
+    "на основе фото", "на основе картин", "на основе изображ",
+    "по прикреп", "по вложен", "с этим фото", "по образцу",
+)
+_PLAIN_IMG = (
+    "просто картин", "просто нарисуй", "просто сгенери", "без референс",
+    "без фото", "с нуля", "по тексту", "только текст", "не по фото",
 )
 _EDIT_TEXT = (
     "перепиши", "отредактируй", "сократи", "исправь ошибки", "исправь текст",
@@ -89,6 +101,8 @@ KNOWN_INTENTS = {
     "pc_recycle",
     "pc_empty_recycle",
     "deep_think",
+    "pick_from_screen",
+    "pick_similar_to_past",
 }
 
 _SEARCH_START = re.compile(
@@ -173,6 +187,97 @@ def is_describe_screen(low: str) -> bool:
     ))
 
 
+def _wants_pick_from_screen(low: str) -> bool:
+    """«Посмотри на экран и выбери», «какая из них лучше» и т.п. (БЛОК 9)."""
+    if any(w in low for w in ("нарисуй", "сгенерир", "сделай картин",
+                                "поищи", "погугли", "открой")):
+        return False
+    full = (
+        "посмотри на экран и выбери", "выбери с экрана", "выбери картин",
+        "выбери фото", "выбери изображ", "выбери одну", "выбери из экран",
+        "выбери на экране", "выбери что-то",
+        "что там интересного", "вырежи и покажи", "вырежи картин",
+        "какая из них лучше", "какая лучше на экране", "какая нравится на экране",
+        "покажи картинку с экрана", "покажи фото с экрана",
+        "найди на экране", "выбери не как в прошлый раз",
+    )
+    for t in full:
+        if t in low:
+            return True
+    if ("экран" in low or "монитор" in low) and any(w in low for w in (
+        "выбери", "выбрать", "какая", "интересного"
+    )):
+        return True
+    return False
+
+
+def _wants_pick_similar(low: str) -> bool:
+    """«Покажи ещё похожее» → pick_similar_to_past (БЛОК 9)."""
+    return any(w in low for w in (
+        "покажи ещё похожее", "покажи еще похожее", "ещё похожее",
+        "еще похожее", "ещё такое", "еще такое", "в том же стиле",
+        "похожее на то, что я смотрел",
+    ))
+
+
+_REFINE_IMAGE_TRIGGERS = (
+    "слишком темн", "слишком светл", "слишком тускл", "слишком ярк",
+    "добавь деталей", "добавь деталеи", "добавь детале", "больше деталей",
+    "добавь детал", "не хватает деталей", "убери фон", "убери задний фон",
+    "поменяй фон", "добавь фон", "слишком размыт", "размыт",
+    "прорисуй лицо", "добавь лица", "исправь лицо", "руки кривые",
+    "ужасные руки", "добавь свет", "сделай светлее", "затемни",
+    "сделай ярче", "сделай контраст",
+    "сделай более аниме", "более аниме", "в стиле anime",
+    "сделай реалистичн", "более реалистичн",
+    "в акварели", "акварель", "в масле", "маслом",
+    "сделай вариаци", "новую вариаци", "другой вариант",
+)
+_QUALITY_IMAGE_TRIGGERS = (
+    "в высоком качестве", "высокое качество", "сделай качественнее",
+    "быстро", "чернов", "набросок", "в черновом",
+    "максимально высоком", "ультра качество", "супер качество",
+    "в сверхвысоком", "ультра",
+)
+_COUNT_TRIGGER = re.compile(r"покажи\s+(\d+)\s+(?:вариант|варианта|вариантов)", re.I)
+
+
+def _wants_refine(low: str) -> bool:
+    """Фраза = правка прошлой генерации (refine loop)."""
+    if any(w in low for w in ("нарисуй новую", "нарисуй другую", "сгенерируй новую",
+                                "другое изображение", "другая картинка")):
+        return False
+    return any(t in low for t in _REFINE_IMAGE_TRIGGERS)
+
+
+def _wants_quality_preset(low: str) -> bool:
+    """Фраза = выбор качества генерации."""
+    return any(t in low for t in _QUALITY_IMAGE_TRIGGERS)
+
+
+def _generation_count(low: str) -> int:
+    m = _COUNT_TRIGGER.search(low)
+    if m:
+        try:
+            return max(1, min(6, int(m.group(1))))
+        except ValueError:
+            return 0
+    if any(w in low for w in ("несколько вариантов", "несколько варианта")):
+        return 3
+    return 0
+
+
+def wants_image_in_chat(low: str) -> bool:
+    """Найти картинку и положить файл в чат, а не только открыть поиск."""
+    low = low or ""
+    if any(w in low for w in ("в чат", "в чате", "пришли", "закинь", "выдай картин", "выдай фото")):
+        return True
+    return any(w in low for w in (
+        "скинь картин", "скинь фото", "скинь изображ",
+        "кинь картин", "кинь фото", "покажи в чат",
+    ))
+
+
 def is_web_search(low: str) -> bool:
     if is_local_search(low):
         return False
@@ -184,7 +289,7 @@ def is_web_search(low: str) -> bool:
         return True
     if _SEARCH_START.match(low) and not _NOT_WEB.match(low):
         return True
-    if any(v in low for v in ("найди", "поищи", "покажи", "скинь")) and (
+    if any(v in low for v in ("найди", "поищи", "покажи", "скинь", "пришли", "закинь")) and (
         any(w in low for w in _IMG + _VID + ("в интернете", "в сети", "статью", "информац", "пример"))
     ):
         return True
@@ -226,7 +331,9 @@ def strip_search_fluff(text: str) -> str:
         r"^\s*(мне\s+|для\s+меня\s+)",
         r"^\s*(картинки|картинку|фото|изображения|видео)\s+(по\s+|про\s+|с\s+)?",
         r"^\s*(как\s+найти)\s+",
-        r"^\s*(покажи|скинь|хочу)\s+",
+        r"^\s*(покажи|скинь|хочу|пришли|закинь)\s+",
+        r"\s*(в\s+чат|в\s+чате)\s*",
+        r"\s*(по\s+референсу|по\s+фото)\s*",
     ]
     prev = None
     while prev != t:
@@ -257,6 +364,12 @@ def classify(text: str, ctx: Optional[Dict[str, Any]] = None) -> Optional[Dict[s
             return None
         return {"intent": "chat", "args": {}, "speak": ""}
 
+    # Умный выбор с экрана (БЛОК 9)
+    if _wants_pick_from_screen(low):
+        return {"intent": "pick_from_screen", "args": {"request": raw}, "speak": ""}
+    if _wants_pick_similar(low):
+        return {"intent": "pick_similar_to_past", "args": {}, "speak": ""}
+
     if is_pick(low, has_search):
         return {"intent": "describe_screen", "args": {}, "speak": ""}
     if is_describe_screen(low):
@@ -268,10 +381,13 @@ def classify(text: str, ctx: Optional[Dict[str, Any]] = None) -> Optional[Dict[s
     search_first = any(w in low for w in _SEARCH_FIRST) or (
         "покажи" in low and any(w in low for w in _IMG + _VID)
     )
-    if any(w in low for w in _EDIT_IMG) or (
+    ref_draw = any(w in low for w in _EDIT_IMG) or any(w in low for w in _REF_IMG) or (
+        "переделай" in low and (ctx.get("has_last_image") or any(w in low for w in _IMG))
+    ) or (
         "в стиле" in low and (ctx.get("has_last_image") or any(w in low for w in _IMG))
-    ):
-        if ctx.get("has_last_image") or any(w in low for w in _IMG):
+    )
+    if ref_draw and not search_first and not any(w in low for w in _PLAIN_IMG):
+        if ctx.get("has_last_image") or any(w in low for w in _IMG) or any(w in low for w in _REF_IMG) or any(w in low for w in _GEN_VERBS):
             prompt = strip_search_fluff(raw)
             return {"intent": "imggen_edit", "args": {"prompt": prompt, "source": "last"}, "speak": ""}
     if (not search_first) and any(w in low for w in _GEN_VERBS):
@@ -283,6 +399,29 @@ def classify(text: str, ctx: Optional[Dict[str, Any]] = None) -> Optional[Dict[s
         ):
             prompt = re.sub(r"^" + re.escape(v) + r"\s+", "", prompt, flags=re.I)
         return {"intent": "imggen", "args": {"prompt": prompt or raw, "size": "square"}, "speak": ""}
+
+    # БЛОК 10: правка качества/стиля прошлой генерации → imggen_edit с refine_feedback
+    if (not search_first) and (ctx.get("has_last_image") or ctx.get("phone_media_last") or ctx.get("imggen_stage")):
+        if _wants_refine(low):
+            source = "last"
+            return {
+                "intent": "imggen_edit",
+                "args": {"refine_feedback": raw,
+                         "prompt": strip_search_fluff(raw), "source": source},
+                "speak": "",
+            }
+        if _wants_quality_preset(low) and not any(w in low for w in ("нарисуй новую",)):
+            return {
+                "intent": "imggen_edit",
+                "args": {"prompt": raw, "source": "last"},
+                "speak": "",
+            }
+
+    # БЛОК 10: запрос нескольких вариантов → imggen count=N
+    count = _generation_count(low)
+    if (not search_first) and count:
+        prompt = strip_search_fluff(raw)
+        return {"intent": "imggen", "args": {"prompt": prompt or raw, "size": "square", "count": count}, "speak": ""}
 
     if any(w in low for w in (
         "скинь файлом", "дай файлом", "сохрани в файл", "сохрани как файл",
@@ -338,7 +477,35 @@ def classify(text: str, ctx: Optional[Dict[str, Any]] = None) -> Optional[Dict[s
         mode = guess_mode(low)
         if len(q) < 2:
             q = "интересное" if "интересн" in low else raw
-        return {"intent": "web_search", "args": {"query": q, "mode": mode}, "speak": ""}
+        args: Dict[str, Any] = {"query": q, "mode": mode}
+        if mode == "images":
+            args["into_chat"] = wants_image_in_chat(low)
+        try:
+            try:
+                from .query_parser import QueryParser
+            except ImportError:
+                from query_parser import QueryParser
+            parsed = QueryParser().parse(raw)
+            if parsed.subject:
+                args["query"] = parsed.subject
+                args["subject"] = parsed.subject
+            if parsed.content_type == "image":
+                args["mode"] = "images"
+            elif parsed.content_type == "video":
+                args["mode"] = "video"
+            args["quantity"] = parsed.quantity
+            args["content_type"] = parsed.content_type
+            args["wants_download"] = parsed.wants_download
+            args["wants_description"] = parsed.wants_description
+            args["modifiers"] = parsed.modifiers
+            args["language"] = parsed.language
+            if parsed.filters:
+                args["filters"] = parsed.filters
+            if parsed.wants_download and args.get("mode") == "images":
+                args["into_chat"] = True
+        except Exception as e:
+            print(f"intent: query parser {e}", flush=True)
+        return {"intent": "web_search", "args": args, "speak": ""}
 
     if low.startswith("запомни"):
         body = raw.split(":", 1)[-1].strip() if ":" in raw else (raw.split(" ", 1)[-1] if " " in raw else "")
@@ -494,6 +661,10 @@ if __name__ == "__main__":
         ("найди картинки рыжих кошек", "web_search", {}),
         ("поищи фото Токио", "web_search", {}),
         ("скинь примеры логотипов", "web_search", {}),
+        ("нарисуй по этому фото закат на море", "imggen_edit", {}),
+        ("нарисуй по референсу лису в снегу", "imggen_edit", {}),
+        ("скинь картинку акулы в чат", "web_search", {}),
+        ("пришли фото токио", "web_search", {}),
         ("переделай последнюю картинку, добавь дождь", "imggen_edit", {"has_last_image": True}),
         ("перепиши в официальном стиле", "text_edit", {"has_upload": True, "last_upload_id": "x.txt"}),
         ("покажи мои файлы", "file_list", {"has_upload": True}),

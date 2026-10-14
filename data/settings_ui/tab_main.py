@@ -6,6 +6,67 @@ import config
 from core.llm_client import normalize_api_url
 
 
+def _models_headers(key: str) -> dict:
+    """Заголовки для GET /models. Передаёт реальный Bearer-ключ (не lm-studio)."""
+    headers = {"Content-Type": "application/json"}
+    if key and key != "lm-studio":
+        headers["Authorization"] = f"Bearer {key}"
+    return headers
+
+
+def _fetch_models(api_url: str, key: str):
+    """Синхронный GET /models с перебором URL-вариантов.
+
+    Возвращает (names: list[str], errors: list[str]).
+    """
+    errors: list = []
+    base = (api_url or "").rstrip("/")
+    if not base:
+        base = "http://127.0.0.1:1234/v1"
+    if base.endswith("/v1"):
+        bare = base[: len(base) - len("/v1")].rstrip("/")
+        urls = [base + "/models", bare + "/models"]
+    else:
+        urls = [base + "/models", base + "/v1/models"]
+    # уникальные, сохраняя порядок
+    urls = list(dict.fromkeys(urls))
+    for url in urls:
+        try:
+            req = urllib.request.Request(url, headers=_models_headers(key))
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+            data = json.loads(text)
+            models = data.get("data") or data.get("models") or []
+            names = []
+            for m in models:
+                if isinstance(m, dict):
+                    names.append(str(m.get("id") or m.get("name") or m))
+                else:
+                    names.append(str(m))
+            if names:
+                return names, []
+            errors.append(f"{url}: пустой список")
+        except Exception as e:
+            errors.append(f"{url}: {type(e).__name__}: {e}")
+    return [], errors
+
+
+class ModelsLoader(QtCore.QObject):
+    """Фоновая загрузка списка моделей (не блокирует GUI)."""
+
+    done = QtCore.pyqtSignal(list, list)  # names, errors
+
+    def __init__(self, api_url: str, key: str):
+        super().__init__()
+        self.api_url = api_url
+        self.key = key
+
+    @QtCore.pyqtSlot()
+    def run(self):
+        names, errors = _fetch_models(self.api_url, self.key)
+        self.done.emit(names, errors)
+
+
 class MainTabMixin:
     def _setup_main_tab(self, tab):
         layout = QtWidgets.QVBoxLayout(tab)
@@ -95,6 +156,13 @@ class MainTabMixin:
         self.economy_check.setToolTip("Отключает авто-суммаризацию, проактивные сообщения и инициативные генерации. Ассистент отвечает только когда вы её спросили.")
         layout.addWidget(self.economy_check)
 
+        layout.addWidget(QtWidgets.QLabel("Контекст для LLM:"))
+        self.context_combo = QtWidgets.QComboBox()
+        self.context_combo.addItem("Полный — карточка, история, как сейчас", "full")
+        self.context_combo.addItem("Слабый — в модель только твоя фраза", "lean")
+        self.context_combo.setToolTip("Слабый экономит токены: без карточки, истории и служебного контекста.")
+        layout.addWidget(self.context_combo)
+
         layout.addWidget(QtWidgets.QLabel("System prompt (ядро):"))
         self.system_edit = QtWidgets.QPlainTextEdit()
         self.system_edit.setMaximumHeight(120)
@@ -130,6 +198,8 @@ class MainTabMixin:
                 model = p.get("model", "")
                 if model:
                     self.model_combo.setEditText(model)
+                # сразу подтянуть модели для выбранного профиля
+                QtCore.QTimer.singleShot(250, self.load_models_list)
                 return
 
     def _save_profile_dialog(self) -> None:
@@ -187,29 +257,20 @@ class MainTabMixin:
         api_url = self._base_url()
         key = self.api_key_edit.text().strip() or getattr(config, "API_KEY", "lm-studio")
         self.conn_status.setText(f"Запрос моделей: {api_url}/models …")
-        QtWidgets.QApplication.processEvents()
-        errors = []
-        names = []
-        url = api_url.rstrip("/") + "/models"
-        try:
-            req = urllib.request.Request(
-                url,
-                headers={
-                    "Authorization": f"******",
-                    "Content-Type": "application/json",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                data = json.loads(resp.read().decode("utf-8", errors="replace"))
-            models = data.get("data") or data.get("models") or []
-            for m in models:
-                if isinstance(m, dict):
-                    names.append(str(m.get("id") or m.get("name") or m))
-                else:
-                    names.append(str(m))
-        except Exception as e:
-            errors.append(f"{url}: {e}")
+        # не начинать новый запрос, пока идёт старый
+        if getattr(self, "_models_thread", None) is not None and self._models_thread.isRunning():
+            return
+        # фоновая загрузка, чтобы UI не замирал
+        self._models_loader = ModelsLoader(api_url, key)
+        self._models_thread = QtCore.QThread(self)
+        self._models_loader.moveToThread(self._models_thread)
+        self._models_thread.started.connect(self._models_loader.run)
+        self._models_loader.done.connect(self._on_models_loaded)
+        self._models_loader.done.connect(self._models_thread.quit)
+        self._models_thread.finished.connect(self._models_loader.deleteLater)
+        self._models_thread.start()
 
+    def _on_models_loaded(self, names, errors):
         current = self.model_combo.currentText().strip()
         if names:
             self.model_combo.clear()
@@ -221,20 +282,18 @@ class MainTabMixin:
                 else:
                     self.model_combo.setEditText(current)
             self.conn_status.setStyleSheet("color: #0f0;")
-            self.conn_status.setText(f"OK: моделей {len(names)}\n{api_url}")
+            self.conn_status.setText(f"OK: моделей {len(names)}\n{self._base_url()}")
         else:
             if self.model_combo.count() == 0:
                 self.model_combo.addItem(
                     current or getattr(config, "MODEL_NAME", "local-model") or "local-model"
                 )
             self.conn_status.setStyleSheet("color: #f66;")
-            self.conn_status.setText(
-                "Не удалось получить модели.\n" + "\n".join(errors[:4])
-            )
+            self.conn_status.setText("Не удалось получить модели.\n" + "\n".join(errors[:4]))
 
     def test_connection(self):
         api_url = self._base_url()
-        key = self.api_key_edit.text().strip() or "lm-studio"
+        key = self.api_key_edit.text().strip() or getattr(config, "API_KEY", "lm-studio")
         model = self.model_combo.currentText().strip() or "local-model"
         self.conn_status.setText("Тест chat/completions…")
         QtWidgets.QApplication.processEvents()
@@ -245,10 +304,14 @@ class MainTabMixin:
             "max_tokens": 8,
             "stream": False,
         }).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
         try:
             req = urllib.request.Request(
                 url, data=body,
-                headers={"Authorization": f"******", "Content-Type": "application/json"},
+                headers=headers,
                 method="POST",
             )
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -278,6 +341,9 @@ class MainTabMixin:
             self.history_tail_spin.setValue(40)
         self.system_edit.setPlainText(str(getattr(config, "SYSTEM_PROMPT", "") or ""))
         self.economy_check.setChecked(bool(getattr(config, "LLM_ECONOMY_MODE", False)))
+        ctx_mode = str(getattr(config, "LLM_CONTEXT_MODE", "full") or "full")
+        ctx_idx = self.context_combo.findData(ctx_mode)
+        self.context_combo.setCurrentIndex(ctx_idx if ctx_idx >= 0 else 0)
         self._rebuild_profile_combo()
         QtCore.QTimer.singleShot(300, self.load_models_list)
 
@@ -300,5 +366,6 @@ class MainTabMixin:
             "HISTORY_TAIL": int(self.history_tail_spin.value()),
             "SYSTEM_PROMPT": self.system_edit.toPlainText(),
             "LLM_ECONOMY_MODE": self.economy_check.isChecked(),
+            "LLM_CONTEXT_MODE": str(self.context_combo.currentData() or "full"),
             "SAVED_PROFILES": list(getattr(config, "SAVED_PROFILES", []) or []),
         }

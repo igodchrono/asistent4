@@ -1,0 +1,11 @@
+emotion:
+  template: "{quality}, {style}, {emotion} expression of {subject}, {mood_lighting}, {background}, {details}"
+  defaults:
+    quality: "masterpiece, best quality, ultra-detailed"
+    mood_lighting: "mood lighting matching emotion"
+    details: "expressive face, detailed eyes"
+  slots:
+    subject: required
+    emotion: required
+    mood_lighting: optional
+    background: optional

@@ -1,0 +1,11 @@
+scene_cyberpunk:
+  template: "{quality}, {style}, cyberpunk city at night, {rain}, {neon_signs}, {crowd}, {lighting}, {details}"
+  defaults:
+    quality: "masterpiece, best quality, ultra-detailed, 8k"
+    style: "cyberpunk, neon lights, futuristic"
+    rain: "rain-soaked streets"
+    neon_signs: "glowing neon signs"
+    lighting: "neon glow, reflections"
+    details: "intricate futuristic details, atmospheric"
+  slots:
+    crowd: optional

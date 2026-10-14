@@ -1,0 +1,11 @@
+action:
+  template: "{quality}, {style}, dynamic action of {subject}, {action}, {speed_lines}, {lighting}, {background}, {details}"
+  defaults:
+    quality: "masterpiece, best quality, ultra-detailed"
+    lighting: "dramatic lighting, motion blur"
+    details: "dynamic pose, high energy"
+  slots:
+    subject: required
+    action: required
+    speed_lines: optional
+    background: optional

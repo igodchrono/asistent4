@@ -1,0 +1,11 @@
+scene_nature:
+  template: "{quality}, {style}, {scene} in nature, {lighting}, {weather}, {foreground}, {background}, {details}"
+  defaults:
+    quality: "masterpiece, best quality, ultra-detailed, 8k"
+    lighting: "soft natural light"
+    foreground: "lush vegetation"
+    details: "intricate details, vibrant colors"
+  slots:
+    scene: required
+    weather: optional
+    background: optional

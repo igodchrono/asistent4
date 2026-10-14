@@ -1,0 +1,41 @@
+anime:
+  positive_prefix: "anime style, cel shading, vibrant colors"
+  negative_prefix: "3d, realistic, photo, lowres"
+  cfg_scale: 7.0
+  steps: 30
+  sampler: "DPM++ 2M Karras"
+
+photorealistic:
+  positive_prefix: "photorealistic, 8k, sharp focus, natural lighting"
+  negative_prefix: "cartoon, anime, painting, illustration"
+  cfg_scale: 5.0
+  steps: 40
+  sampler: "DPM++ SDE Karras"
+
+watercolor:
+  positive_prefix: "watercolor painting, soft edges, paper texture"
+  negative_prefix: "photo, 3d, sharp edges, digital"
+  cfg_scale: 6.5
+  steps: 35
+  sampler: "DPM++ 2M Karras"
+
+oil_painting:
+  positive_prefix: "oil painting, brush strokes, impasto, canvas texture"
+  negative_prefix: "digital, photo, flat"
+  cfg_scale: 6.0
+  steps: 40
+  sampler: "DPM++ 2M Karras"
+
+concept_art:
+  positive_prefix: "concept art, digital painting, cinematic lighting"
+  negative_prefix: "lowres, amateur, sketch"
+  cfg_scale: 7.5
+  steps: 35
+  sampler: "DPM++ 2M Karras"
+
+cyberpunk:
+  positive_prefix: "cyberpunk, neon lights, futuristic, rain, night city"
+  negative_prefix: "daylight, rural, historical"
+  cfg_scale: 7.0
+  steps: 35
+  sampler: "DPM++ 2M Karras"

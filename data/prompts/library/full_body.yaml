@@ -1,0 +1,11 @@
+full_body:
+  template: "{quality}, {style}, full body of {subject}, {pose}, {clothing}, {lighting}, {background}, {details}"
+  defaults:
+    quality: "masterpiece, best quality, ultra-detailed"
+    lighting: "soft studio lighting"
+    details: "detailed clothing, sharp focus"
+  slots:
+    subject: required
+    pose: optional
+    clothing: optional
+    background: optional

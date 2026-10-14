@@ -1,6 +1,8 @@
 ﻿# -*- coding: utf-8 -*-
 from __future__ import annotations
 import json
+from datetime import datetime
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 import aiohttp
@@ -213,7 +215,19 @@ class LLMClient:
                     f"3) Провайдер: {self._provider_label}, модель: {self.model}"
                 )
 
-    async def chat_once(self, messages: List[Dict[str, Any]], **opts) -> str:
+    async def chat_once_message(
+        self, messages: List[Dict[str, Any]], **opts
+    ) -> Dict[str, Any]:
+        """OpenAI-совместимый запрос, возвращает полный message-словарь.
+
+        В message входят: content, reasoning_content, finish_reason, role,
+        а также model (добавляется из ответа).
+
+        opts:
+            - model, temperature, max_tokens — как обычно
+            - raw_log (str|None) — если задано, пишет сырой JSON ответа
+              в data/logs/imggen_prompt_raw.log (tag = raw_log)
+        """
         payload = {
             "model": opts.get("model") or self.model,
             "messages": messages,
@@ -231,10 +245,63 @@ class LLMClient:
                 if resp.status != 200:
                     raise RuntimeError(f"HTTP {resp.status}: {text[:400]}")
                 data = json.loads(text)
-                return (
-                    data.get("choices", [{}])[0]
-                    .get("message", {})
-                    .get("content")
-                    or ""
-                )
+                # ── сырое логирование (для диагностики reasoning-моделей) ──
+                if opts.get("raw_log"):
+                    self._log_raw(payload, data, url, resp.status, tag=opts.get("raw_log", "imggen"))
+                choice = (data.get("choices") or [{}])[0] or {}
+                msg = dict(choice.get("message") or {})
+                msg["model"] = data.get("model") or payload["model"]
+                msg["finish_reason"] = choice.get("finish_reason")
+                msg["usage"] = data.get("usage") or {}
+                if "refusal" not in msg:
+                    msg["refusal"] = None
+                return msg
+
+    async def chat_once(self, messages: List[Dict[str, Any]], **opts) -> str:
+        """OpenAI-совместимый запрос, возвращает строку ответа.
+
+        Пробует content → reasoning_content (для reasoning-моделей).
+        """
+        msg = await self.chat_once_message(messages, **opts)
+        content = str(msg.get("content") or "").strip()
+        if content:
+            return content
+        reasoning = str(msg.get("reasoning_content") or "").strip()
+        return reasoning
+
+    def _log_raw(
+        self, payload: dict, data: dict, url: str, status: int, *, tag: str = "imggen"
+    ) -> None:
+        """Пишет сырой JSON ответа LLM в imggen_prompt_raw.log (без api_key)."""
+        try:
+            log_dir = Path(__file__).resolve().parents[2] / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / "imggen_prompt_raw.log"
+            choice = (data.get("choices") or [{}])[0] or {}
+            message = choice.get("message", {}) or {}
+            entry = {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "tag": tag,
+                "url": url,
+                "status": status,
+                "model": payload.get("model"),
+                "max_tokens": payload.get("max_tokens"),
+                "finish_reason": choice.get("finish_reason"),
+                "usage": data.get("usage"),
+                "refusal": message.get("refusal"),
+                "message": {
+                    "content": (
+                        str(message.get("content"))[:3000] if message.get("content") else None
+                    ),
+                    "reasoning_content": (
+                        str(message.get("reasoning_content"))[:3000]
+                        if message.get("reasoning_content")
+                        else None
+                    ),
+                },
+            }
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        except Exception:
+            pass
 

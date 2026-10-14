@@ -1,74 +1,81 @@
 # -*- coding: utf-8 -*-
-"""Флаги карточки (nsfw). Цензуру контента делает модель, не этот модуль."""
+"""Флаги карточки (nsfw) — только для информации.
+
+Ответственность за контент-политику полностью перенесена в LLM.
+См. data/CONTENT_POLICY.md
+
+Этот модуль не содержит логики фильтрации контента.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Dict
 
-_MODE_NSFW = {"nsfw", "uncensored", "uncensored_adult", "adult", "open"}
-_MODE_LOCK = {"full_censor", "censor_all", "lock", "sfw_strict"}
+
+def character_is_nsfw(app) -> bool:
+    """(Информационно) Есть ли у персонажа NSFW-контент.
+
+    Возвращает True, если персонаж предназначен для взрослой аудитории.
+    Нигде в коде не используется для фильтрации — только для справки.
+    """
+    try:
+        from character_catalog import read_character_card
+        cid = ""
+        if app is not None:
+            if hasattr(app, "get_active_character"):
+                cid = str(app.get_active_character() or "")
+            else:
+                cid = str(getattr(getattr(app, "config", None), "ACTIVE_CHARACTER", "") or "")
+        card = read_character_card(cid) or ""
+        for raw in (card or "").splitlines()[:60]:
+            line = raw.strip().lower()
+            if not line or (line.startswith("#") and ":" not in line[:20]):
+                continue
+            if ":" not in line:
+                continue
+            key, val = line.split(":", 1)
+            key, val = key.strip().lower(), val.strip().lower()
+            if key == "nsfw":
+                return val in ("true", "yes", "1", "on", "18+", "да")
+    except Exception:
+        pass
+    return False
+
+
+def character_policy(app) -> Dict[str, Any]:
+    """(Информационно) Контент-политика персонажа.
+
+    Возвращает информационный словарь для логов/UI.
+    Код не принимает решений на основе этих данных.
+    """
+    cid = ""
+    if app is not None:
+        if hasattr(app, "get_active_character"):
+            cid = str(app.get_active_character() or "")
+        else:
+            cid = str(getattr(getattr(app, "config", None), "ACTIVE_CHARACTER", "") or "")
+    nsfw = character_is_nsfw(app)
+    return {
+        "id": cid,
+        "nsfw": nsfw,
+        "mode": "nsfw" if nsfw else "sfw",
+    }
 
 
 def parse_character_policy(card: str) -> Dict[str, Any]:
+    """(Информационно) Парсинг политики из карточки.
+
+    Только для чтения; решения принимает LLM.
+    """
     nsfw = False
-    mode = "sfw"
-    seen_mode = False
     for raw in (card or "").splitlines()[:60]:
-        line = raw.strip()
+        line = raw.strip().lower()
         if not line or (line.startswith("#") and ":" not in line[:20]):
             continue
         if ":" not in line:
             continue
         key, val = line.split(":", 1)
-        key, val = key.strip().lower(), val.strip()
+        key, val = key.strip().lower(), val.strip().lower()
         if key == "nsfw":
-            nsfw = val.lower() in ("true", "yes", "1", "on", "18+", "да")
-        elif key in ("content_policy", "policy", "censor"):
-            seen_mode = True
-            mode = val.lower().split()[0] if val else "sfw"
-    if not seen_mode:
-        mode = "nsfw" if nsfw else "sfw"
-    if mode in _MODE_LOCK:
-        nsfw = False
-        mode = "full_censor"
-    elif mode in _MODE_NSFW or nsfw:
-        nsfw = True
-        mode = "nsfw"
-    else:
-        nsfw = False
-        mode = "sfw"
-    return {"nsfw": bool(nsfw), "mode": mode}
-
-
-def _active_cid(app) -> str:
-    if app is None:
-        return ""
-    try:
-        if hasattr(app, "get_active_character"):
-            return str(app.get_active_character() or "")
-    except Exception:
-        pass
-    try:
-        return str(getattr(getattr(app, "config", None), "ACTIVE_CHARACTER", "") or "")
-    except Exception:
-        return ""
-
-
-def character_policy(app) -> Dict[str, Any]:
-    cid = _active_cid(app)
-    card = ""
-    try:
-        from character_catalog import read_character_card
-        card = read_character_card(cid) or ""
-    except Exception:
-        card = ""
-    meta = parse_character_policy(card)
-    meta["id"] = cid
-    st = getattr(app, "state", None) if app is not None else None
-    if isinstance(st, dict):
-        st["character_nsfw"] = bool(meta["nsfw"])
-        st["content_policy"] = meta["mode"]
-    return meta
-
-
-def character_is_nsfw(app) -> bool:
-    return bool(character_policy(app).get("nsfw"))
+            nsfw = val in ("true", "yes", "1", "on", "18+", "да")
+    return {"nsfw": nsfw, "mode": "nsfw" if nsfw else "sfw"}

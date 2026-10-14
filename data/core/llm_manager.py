@@ -55,6 +55,10 @@ class APIProvider(LLMProvider):
     async def chat_once(self, messages: List[Dict], **opts) -> str:
         return await self._client.chat_once(messages, **opts)
 
+    async def chat_once_message(self, messages: List[Dict], **opts) -> Dict:
+        """Полный message-словарь (content + reasoning_content)."""
+        return await self._client.chat_once_message(messages, **opts)
+
     async def chat_stream(self, messages: List[Dict], **opts) -> AsyncIterator[str]:
         async for chunk in self._client.chat_stream(messages, **opts):
             yield chunk
@@ -100,6 +104,11 @@ class EXEProvider(LLMProvider):
         prompt = "\n".join(m.get("content", "") for m in messages)
         import asyncio
         return await asyncio.to_thread(self.generate, prompt, **opts)
+
+    async def chat_once_message(self, messages: List[Dict], **opts) -> Dict:
+        """EXE-провайдер: возвращает только content."""
+        content = await self.chat_once(messages, **opts)
+        return {"content": content}
 
     async def chat_stream(self, messages: List[Dict], **opts) -> AsyncIterator[str]:
         result = await self.chat_once(messages, **opts)
@@ -204,6 +213,15 @@ class LLMManager:
         if self._provider is None:
             raise RuntimeError("Провайдер не выбран. Укажите источник LLM в настройках.")
         return await self._provider.chat_once(messages, **opts)
+
+    async def chat_once_message(self, messages: List[Dict], **opts) -> Dict:
+        """Полный message-словарь (content + reasoning_content)."""
+        if self._provider is None:
+            raise RuntimeError("Провайдер не выбран. Укажите источник LLM в настройках.")
+        if hasattr(self._provider, "chat_once_message"):
+            return await self._provider.chat_once_message(messages, **opts)
+        content = await self._provider.chat_once(messages, **opts)
+        return {"content": content}
 
     async def chat_stream(self, messages: List[Dict], **opts) -> AsyncIterator[str]:
         if self._provider is None:

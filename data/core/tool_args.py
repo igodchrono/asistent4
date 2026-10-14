@@ -20,7 +20,11 @@ _COMMON_SAFE = {"query", "text", "url", "index", "target", "mode", "name", "kind
 
 TOOL_ARG_ALLOWLIST: Dict[str, Set[str]] = {
     "describe_screen": set(),
-    "web_search": {"query", "mode", "queries", "text"},
+    "web_search": {
+        "query", "mode", "queries", "text", "into_chat",
+        "quantity", "subject", "content_type", "wants_download", "wants_description",
+        "modifiers", "language", "filters",
+    },
     "search_similar": {"kind", "query"},
     "open_last_search": {"text", "browser_only", "index"},
     "download_image": {"index", "url", "text", "href", "n"},
@@ -47,12 +51,18 @@ TOOL_ARG_ALLOWLIST: Dict[str, Set[str]] = {
     "pc_recycle": {"name", "text"},
     "pc_empty_recycle": set(),
     "deep_think": set(),
-    "generate_image": {"prompt", "text", "query", "negative", "size", "source", "workflow"},
+    "generate_image": {
+        "prompt", "text", "query", "negative", "size", "source", "workflow",
+        "style", "quality", "seed", "count", "variation", "refine_feedback",
+        "reference_strength", "source_strength",
+    },
     "edit_uploaded": {"instruction", "text", "query", "target", "file_id"},
     "list_uploads": set(),
     "get_file_link": {"file_id", "name", "text"},
     "read_uploaded": {"file_id", "name", "target"},
     "send_file": {"name", "content", "text", "query", "file"},
+    "pick_from_screen": {"request", "query", "text"},
+    "pick_similar_to_past": {"n", "query", "text"},
 }
 
 

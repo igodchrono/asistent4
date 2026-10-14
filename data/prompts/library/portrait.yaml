@@ -1,0 +1,10 @@
+portrait:
+  template: "{quality}, {style}, portrait of {subject}, {expression}, {lighting}, {background}, {details}"
+  defaults:
+    quality: "masterpiece, best quality, ultra-detailed"
+    lighting: "soft light, cinematic"
+    details: "detailed eyes, sharp focus"
+  slots:
+    subject: required
+    expression: optional
+    background: optional
