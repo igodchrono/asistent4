@@ -378,7 +378,7 @@ class PluginImpl(Plugin):
     def on_load(self, app: AppContext) -> None:
         self.app = app
         app.state.setdefault("imggen_stage", "idle")
-        print("🖼 imggen 6.3.1: show yourself / t2i / edit / continuation (то же самое) + fallback + diagnostics", flush=True)
+        print("🖼 imggen 6.3.2: refs bound before prompt", flush=True)
         self._llm_probe(app)
 
     def register_tools(self, app: AppContext) -> None:
@@ -544,6 +544,7 @@ class PluginImpl(Plugin):
                 refs = self._refs(app) or list(app.state.get("imggen_refs") or [])
             else:
                 refs = self._attached(app)
+        refs = list(refs or [])
         name, _look = self._char_look(app)
         about = self._about_character(f"{raw}\n{app.state.get('imggen_request') or ''}", name)
         if about and not self._wants_fresh(low) and not self._wants_plain(low) and kind not in ("edit", "plain", "cont"):
@@ -911,10 +912,16 @@ class PluginImpl(Plugin):
         return "картинка по тексту, без референса. один промпт и сразу рисую."
 
     def _schedule_one(self, app, text, refs, wf: str, job: float = 0):
+        # Копия снаружи. В run() имя refs больше не пишем:
+        # любое refs = [] ниже делало бы его локальным и роняло чтение до присваивания.
+        incoming = list(refs or [])
+
         async def run():
-            nonlocal refs  # иначе refs = [] ниже делает refs локальной для всей run()
+            active = list(incoming)
+            kind = str(app.state.get("imggen_kind") or "")
+            print(f"imggen one_prompt: kind={kind} refs={active!r} workflow={wf}", flush=True)
             try:
-                prompt = await self._one_prompt(app, text, refs, wf)
+                prompt = await self._one_prompt(app, text, active, wf)
             except Exception as e:
                 print(f"imggen one prompt: {e}", flush=True)
                 prompt = ""
@@ -946,21 +953,21 @@ class PluginImpl(Plugin):
                 self._cont_log(app, "no i2i workflow, fallback to t2i with anchored prompt")
                 fam = "t2i"
                 path = self._resolve_wf("t2i")
-                refs = []
+                active = []
                 app.state["imggen_refs"] = []
                 app.state["imggen_ref_kind"] = ""
             if is_cont:
                 seed_v = app.state.get("imggen_last_seed") or app.state.get("imggen_fixed_seed")
                 self._cont_log(
                     app,
-                    f"new prompt_len={len(prompt)}; refs={[Path(r).name for r in refs]}; "
+                    f"new prompt_len={len(prompt)}; refs={[Path(r).name for r in active]}; "
                     f"wf={fam}; seed={seed_v}",
                 )
             if not path.exists() or self._is_stub_wf(path):
                 app.state["imggen_stage"] = "confirm"
                 self._notify(app, f"промпт есть, но нет графа {path.name}.", None)
                 return
-            if fam == "edit" and not refs:
+            if fam == "edit" and not active:
                 fam = "t2i"
                 path = self._resolve_wf("t2i")
                 app.state["imggen_last_wf"] = fam
@@ -969,7 +976,7 @@ class PluginImpl(Plugin):
                 "правка референса" if fam == "edit" else "картинка по тексту"
             )
             self._notify(app, f"{title}.\n«{prompt[:700]}»\n\nотправляю в ComfyUI.", None)
-            self._start(app, prompt, path, list(refs or []), job)
+            self._start(app, prompt, path, list(active), job)
 
         try:
             loop = asyncio.get_event_loop()
@@ -985,10 +992,11 @@ class PluginImpl(Plugin):
         threading.Thread(target=work, name="imggen-one", daemon=True).start()
 
     async def _one_prompt(self, app, request: str, refs: list, wf: str) -> str:
-        refs = list(refs or [])  # defensive: не дать UnboundLocalError в любой ветке
+        refs = list(refs or [])
+        kind = str(app.state.get("imggen_kind") or "")
+        print(f"imggen one_prompt: kind={kind} refs={refs!r} workflow={wf}", flush=True)
         app.state["imggen_llm_fallback"] = False
         fam = self._family(wf)
-        kind = str(app.state.get("imggen_kind") or "")
         cont_cfg = self._cont_settings(app)
         name, look = self._char_look(app)
         origin, previous, change, fresh = self._split_revision(request)
